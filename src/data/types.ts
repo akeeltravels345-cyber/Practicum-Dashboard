@@ -368,9 +368,15 @@ export interface SyncSettings {
   lastSyncedAt: string | null
 }
 
+// The deployed billing app. Pointing at localhost by default only worked while
+// the billing app happened to be running on the same laptop, which is not how
+// this gets used day to day.
+export const DEFAULT_SYNC_ENDPOINT = 'https://tifec-intake.vercel.app/api/practicum/roster'
+export const DEFAULT_TOKEN_PAGE = 'https://tifec-intake.vercel.app/api/practicum/token'
+
 export const DEFAULT_SYNC_SETTINGS: SyncSettings = {
   enabled: false,
-  endpoint: '',
+  endpoint: DEFAULT_SYNC_ENDPOINT,
   token: '',
   lastSyncedAt: null,
 }

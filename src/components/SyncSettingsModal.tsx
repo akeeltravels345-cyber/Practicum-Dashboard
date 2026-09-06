@@ -5,6 +5,7 @@ import { Field, TextInput, PrimaryButton, SecondaryButton } from './Form'
 import { useWorkspaceStore } from '../state/store'
 import { fetchRoster, SyncError } from '../services/practicumSync'
 import { formatDate } from '../utils/format'
+import { DEFAULT_SYNC_ENDPOINT, DEFAULT_TOKEN_PAGE } from '../data/types'
 
 export function SyncSettingsModal({ onClose }: { onClose: () => void }) {
   const syncSettings = useWorkspaceStore((s) => s.syncSettings)
@@ -12,7 +13,10 @@ export function SyncSettingsModal({ onClose }: { onClose: () => void }) {
   const applyRosterFeed = useWorkspaceStore((s) => s.applyRosterFeed)
 
   const [enabled, setEnabled] = useState(syncSettings.enabled)
-  const [endpoint, setEndpoint] = useState(syncSettings.endpoint)
+  const [endpoint, setEndpoint] = useState(() => {
+    const saved = syncSettings.endpoint.trim()
+    return !saved || saved.startsWith('http://localhost') ? DEFAULT_SYNC_ENDPOINT : saved
+  })
   const [token, setToken] = useState(syncSettings.token)
   const [busy, setBusy] = useState<'test' | 'sync' | null>(null)
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
@@ -88,16 +92,22 @@ export function SyncSettingsModal({ onClose }: { onClose: () => void }) {
           <span className="text-sm text-[var(--color-ink)]/80">Enable intake sync</span>
         </label>
 
-        <Field label="Feed URL" hint="The billing app's roster endpoint, e.g. http://localhost:3009/api/practicum/roster">
+        <Field
+          label="Feed URL"
+          hint="The deployed billing app's roster endpoint. Only change this if you are running the billing app locally."
+        >
           <TextInput
             value={endpoint}
             onChange={(e) => setEndpoint(e.target.value)}
-            placeholder="http://localhost:3009/api/practicum/roster"
+            placeholder={DEFAULT_SYNC_ENDPOINT}
             autoComplete="off"
           />
         </Field>
 
-        <Field label="Sync token" hint="Sign in to the billing app and open /api/practicum/token to copy yours.">
+        <Field
+          label="Sync token"
+          hint={`Sign in to the billing app, then open ${DEFAULT_TOKEN_PAGE} and copy the token. A token only works against the app it came from, so a local token will not work here.`}
+        >
           <TextInput type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Paste token…" autoComplete="off" />
         </Field>
 
