@@ -2,7 +2,15 @@
 // This shape is the persistence contract — keep additions backward compatible
 // and bump PRACTICUM_DATA_VERSION when the shape changes meaningfully.
 
-export type EvidenceKind = 'source' | 'synthesis' | 'hypothesis'
+// The provenance ladder, weakest claim to strongest. Every clinical statement in
+// the app is tagged with one, so an inference is never displayed as though the
+// client had said it.
+//   source     — words from the session note or transcript
+//   extracted  — an observation mechanically identified in that source
+//   synthesis  — what the accumulated evidence appears to mean
+//   hypothesis — a possible reading that still needs clinical judgment
+//   approved   — a conclusion the clinician has reviewed and accepted
+export type EvidenceKind = 'source' | 'extracted' | 'synthesis' | 'hypothesis' | 'approved'
 
 export type ClientStatus = 'Active' | 'On Hold' | 'Closed' | 'Intake'
 
@@ -27,12 +35,55 @@ export interface Extracted {
   diagnosticConsiderations: string[]
 }
 
+// What a new session does to what we already believed. Each bucket holds the
+// themes that moved in that direction, so a change can always be traced back to
+// the specific evidence that caused it.
 export interface LongitudinalImpact {
-  confirmed: string[]
-  expanded: string[]
-  complicated: string[]
-  contradicted: string[]
-  changed: string[]
+  confirmed: string[]    // seen before and seen again
+  strengthened: string[] // recurring often enough to look like a stable pattern
+  weakened: string[]     // previously established, absent this session
+  expanded: string[]     // newly introduced this session
+  complicated: string[]  // present, but alongside evidence pulling the other way
+  contradicted: string[] // directly opposed by this session
+  resolved: string[]     // absent long enough to look genuinely settled
+  uncertain: string[]    // evidence points both ways; needs clinical judgment
+  changed: string[]      // legacy roll-up, retained so older saved sessions still read
+}
+
+/** Every bucket except the legacy roll-up, for iterating in the UI. */
+export const LONGITUDINAL_BUCKETS = [
+  'confirmed', 'strengthened', 'weakened', 'expanded',
+  'complicated', 'contradicted', 'resolved', 'uncertain',
+] as const
+
+export const LONGITUDINAL_BUCKET_LABELS: Record<string, string> = {
+  confirmed: 'Confirms',
+  strengthened: 'Strengthens',
+  weakened: 'Weakens',
+  expanded: 'Newly introduces',
+  complicated: 'Complicates',
+  contradicted: 'Contradicts',
+  resolved: 'Resolves',
+  uncertain: 'Leaves uncertain',
+}
+
+export function emptyLongitudinalImpact(): LongitudinalImpact {
+  return {
+    confirmed: [], strengthened: [], weakened: [], expanded: [],
+    complicated: [], contradicted: [], resolved: [], uncertain: [], changed: [],
+  }
+}
+
+// A place where the clinician's written note and the session transcript appear
+// to say different things. Never resolved automatically: the two sources are
+// shown side by side and the clinician decides which reading is right.
+export interface SourceDiscrepancy {
+  id: string
+  topic: string          // what the two sources disagree about
+  inNotes: string        // what the session note says
+  inTranscript: string   // what the transcript suggests instead
+  note: string           // why this was flagged
+  reviewed: boolean
 }
 
 export interface Session {
@@ -40,11 +91,19 @@ export interface Session {
   sessionNumber: number
   date: string // ISO date
   duration: number // hours
-  rawText: string
+  rawText: string        // the clinician's documented summary (SuperNotes) — required
+  // Verbatim transcript of the session, when the clinician has one. Optional by
+  // design: the full longitudinal pipeline runs either way. When present it is
+  // treated as a deeper evidence layer, not as a replacement for the note.
+  transcript?: string
   interventions: string
   response: string
   plan: string
   extracted: Extracted
+  // What the transcript surfaced that the note did not. Kept separate so the
+  // clinician can see exactly what the deeper source added.
+  transcriptOnlyEvidence?: string[]
+  sourceDiscrepancies?: SourceDiscrepancy[]
   longitudinalImpact: LongitudinalImpact
   createdAt: string
   isSeed?: boolean // true for reconstructed/seed material pending verification
@@ -296,9 +355,30 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   model: DEFAULT_AI_MODEL,
 }
 
+// Pulls the de-identified caseload from the TIFEC billing app so the practicum
+// roster does not have to be retyped. The feed carries no PHI by contract — see
+// lib/practicumSync.ts in the billing repo for what is and is not sent.
+export interface SyncSettings {
+  enabled: boolean
+  endpoint: string // e.g. http://localhost:3009/api/practicum/roster
+  token: string    // bearer token from /api/practicum/token
+  lastSyncedAt: string | null
+}
+
+export const DEFAULT_SYNC_SETTINGS: SyncSettings = {
+  enabled: false,
+  endpoint: '',
+  token: '',
+  lastSyncedAt: null,
+}
+
 export interface Client {
   id: string
   label: string // "Client K" / "Client L" — never a real name
+  // Opaque billing-client id when this client came from the TIFEC sync. It is the
+  // join key for later syncs, and is meaningless outside the billing system — the
+  // name behind it never leaves that system.
+  externalRef?: string
   age: number
   diagnosis: string
   status: ClientStatus
@@ -348,7 +428,7 @@ export interface Workspace {
   practicum: PracticumState
 }
 
-export const PRACTICUM_DATA_VERSION = 5
+export const PRACTICUM_DATA_VERSION = 6
 
 export interface ExportPayload {
   version: number

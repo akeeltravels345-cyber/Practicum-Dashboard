@@ -1,4 +1,5 @@
 import type { Client } from '../../data/types'
+import { LONGITUDINAL_BUCKETS, LONGITUDINAL_BUCKET_LABELS } from '../../data/types'
 import { SectionCard } from '../../components/SectionCard'
 import { ThemeChip } from '../../components/Chips'
 import { InlineEdit } from '../../components/InlineEdit'
@@ -11,6 +12,15 @@ export function CaseHubTab({ client }: { client: Client }) {
   const updateClient = useWorkspaceStore((s) => s.updateClient)
   const firstSession = client.sessions[0]
   const lastSession = client.sessions[client.sessions.length - 1]
+
+  // Only the buckets that actually moved, so "most recent change" reports
+  // the specific direction of change rather than just "something is new".
+  const recentImpact = lastSession
+    ? LONGITUDINAL_BUCKETS
+        .filter((k) => k !== 'confirmed')
+        .map((key) => ({ key, label: LONGITUDINAL_BUCKET_LABELS[key], items: lastSession.longitudinalImpact[key] ?? [] }))
+        .filter((row) => row.items.length > 0)
+    : []
   const brief = draftNextSessionBriefFor(client)
 
   return (
@@ -46,17 +56,22 @@ export function CaseHubTab({ client }: { client: Client }) {
             <p className="text-sm text-[var(--color-ink)]/45 mb-2">
               Session {lastSession.sessionNumber} · {formatDate(lastSession.date)}
             </p>
-            {lastSession.longitudinalImpact.expanded.length > 0 ? (
-              <p className="text-sm text-[var(--color-ink)]/80">
-                New material introduced possible relevance of:{' '}
-                <span className="font-medium">{lastSession.longitudinalImpact.expanded.join(', ')}</span>. The working synthesis above
-                was drafted to reflect this — verify before relying on it.
-              </p>
+            {recentImpact.length > 0 ? (
+              <div className="text-sm text-[var(--color-ink)]/80 space-y-1">
+                {recentImpact.map((row) => (
+                  <div key={row.key}>
+                    <span className="font-medium">{row.label}:</span> {row.items.join(', ')}
+                  </div>
+                ))}
+                <p className="text-[var(--color-ink)]/60 pt-1">
+                  The working synthesis above was drafted to reflect this — verify before relying on it.
+                </p>
+              </div>
             ) : (
               <p className="text-sm text-[var(--color-ink)]/80">
                 This session appears consistent with previously identified themes
                 {lastSession.longitudinalImpact.confirmed.length > 0 ? ` (${lastSession.longitudinalImpact.confirmed.join(', ')})` : ''}. No
-                new themes were flagged.
+                change to the formulation, treatment plan, or case presentation is warranted on this evidence.
               </p>
             )}
           </SectionCard>

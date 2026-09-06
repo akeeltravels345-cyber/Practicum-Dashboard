@@ -81,4 +81,15 @@
     background: var(--color-hypothesis-tint);
     color: var(--color-hypothesis);
   }
+  /* One step up from raw source: mechanically identified in the note or
+     transcript, but not yet interpreted. */
+  .tag-extracted {
+    background: color-mix(in srgb, var(--color-source-tint) 70%, white);
+    color: var(--color-source);
+  }
+  /* The only tier the clinician owns outright — reviewed and accepted. */
+  .tag-approved {
+    background: var(--color-sage-tint);
+    color: var(--color-sage-deep);
+  }
 }

@@ -16,14 +16,19 @@ import type {
   Session,
   SuggestionFieldKey,
   SupervisionQuestion,
+  SyncSettings,
   TreatmentPlan,
   TreatmentReview,
 } from '../data/types'
-import { DEFAULT_AI_SETTINGS, PRACTICUM_DATA_VERSION } from '../data/types'
+import { DEFAULT_AI_SETTINGS, DEFAULT_SYNC_SETTINGS, PRACTICUM_DATA_VERSION } from '../data/types'
 import { buildSeedClients, buildSeedPracticum } from '../data/seed'
+import type { RosterFeed } from '../services/practicumSync'
+import { demographicsLine } from '../services/practicumSync'
 import {
   buildRuleBasedSuggestion,
-  compareThemes,
+  compareLongitudinal,
+  findTranscriptOnlyEvidence,
+  detectSourceDiscrepancies,
   computeClientAggregates,
   computeProgressDomains,
   draftNextSessionBrief,
@@ -36,10 +41,19 @@ import {
 import type { SessionDraftInput } from '../clinical/engine'
 import { runAiSessionAnalysis } from '../clinical/ai'
 
+/** What a roster sync changed, so the UI can report it honestly. */
+export interface RosterSyncResult {
+  added: number
+  updated: number
+  unchanged: number
+  addedLabels: string[]
+}
+
 interface WorkspaceStore {
   clients: Client[]
   practicum: PracticumState
   aiSettings: AiSettings
+  syncSettings: SyncSettings
 
   getClient: (id: string) => Client | undefined
 
@@ -57,7 +71,13 @@ interface WorkspaceStore {
   rejectSuggestionField: (clientId: string, suggestionId: string, field: SuggestionFieldKey) => void
   dismissSuggestion: (clientId: string, suggestionId: string) => void
 
+  // A flagged note-vs-transcript difference is only ever cleared by the
+  // clinician deciding on it. Nothing resolves a discrepancy automatically.
+  markDiscrepancyReviewed: (clientId: string, sessionId: string, discrepancyId: string) => void
+
   updateAiSettings: (settings: AiSettings) => void
+  updateSyncSettings: (settings: SyncSettings) => void
+  applyRosterFeed: (feed: RosterFeed) => RosterSyncResult
 
   // Manual, intentional revisions — independent of the suggestion workflow
   // above. Still versioned; still never overwrites prior history.
@@ -91,6 +111,22 @@ interface WorkspaceStore {
   resetToSeed: () => void
 }
 
+// Clients are addressed only by an anonymous label. Pick the next unused letter
+// so a synced client gets a stable, human-sayable name in supervision without
+// anything identifying attached to it.
+function nextClientLabel(existing: string[]): string {
+  const taken = new Set(existing)
+  for (let i = 0; i < 26; i++) {
+    const label = `Client ${String.fromCharCode(65 + i)}`
+    if (!taken.has(label)) return label
+  }
+  // Past 26 clients, fall back to a numbered label rather than reusing a letter.
+  for (let n = 2; ; n++) {
+    const label = `Client ${n}`
+    if (!taken.has(label)) return label
+  }
+}
+
 function touch(client: Client): Client {
   return { ...client, updatedAt: new Date().toISOString() }
 }
@@ -108,6 +144,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       clients: buildSeedClients(),
       practicum: buildSeedPracticum(),
       aiSettings: DEFAULT_AI_SETTINGS,
+      syncSettings: DEFAULT_SYNC_SETTINGS,
 
       getClient: (id) => get().clients.find((c) => c.id === id),
 
@@ -117,6 +154,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         const newClient: Client = {
           id,
           label: input.label,
+          externalRef: input.externalRef,
           age: input.age ?? 0,
           diagnosis: input.diagnosis ?? '',
           status: input.status ?? 'Intake',
@@ -186,7 +224,18 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         const client = get().clients.find((c) => c.id === clientId)
         if (!client) return { sessionId: '' }
         const extracted = extractFromSession(input)
-        const impact = compareThemes(extracted.symptoms, client.themes)
+        // Compared against the whole case history, not just the theme list, so
+        // the nine impact buckets can tell "seen again" from "settling" from
+        // "flickering in and out".
+        const impact = compareLongitudinal(
+          extracted.symptoms,
+          client.themes,
+          client.sessions,
+          `${input.rawText}\n${input.transcript ?? ''}`,
+        )
+        const transcript = input.transcript?.trim() ?? ''
+        const transcriptOnlyEvidence = transcript ? findTranscriptOnlyEvidence(input.rawText, transcript) : []
+        const sourceDiscrepancies = transcript ? detectSourceDiscrepancies(input.rawText, transcript) : []
         const sessionId = uuid()
         const session: Session = {
           id: sessionId,
@@ -194,10 +243,13 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
           date: input.date,
           duration: input.duration,
           rawText: input.rawText,
+          transcript: transcript || undefined,
           interventions: input.interventions,
           response: input.response,
           plan: input.plan,
           extracted,
+          transcriptOnlyEvidence: transcriptOnlyEvidence.length > 0 ? transcriptOnlyEvidence : undefined,
+          sourceDiscrepancies: sourceDiscrepancies.length > 0 ? sourceDiscrepancies : undefined,
           longitudinalImpact: impact,
           createdAt: new Date().toISOString(),
         }
@@ -305,19 +357,41 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
               // directly rather than routed through suggestion review. The raw
               // note itself is never touched.
               const { interventions, response, plan } = result.extractedSections
+              const { transcriptOnlyEvidence, sourceDiscrepancies, longitudinalImpact } = result.sourceAnalysis
               const hasRefinement = interventions.trim() || response.trim() || plan.trim()
-              const sessions = hasRefinement
+              const hasSourceAnalysis =
+                transcriptOnlyEvidence.length > 0 || sourceDiscrepancies.length > 0 || longitudinalImpact !== null
+
+              // Claude's two-source findings are recorded against the SESSION,
+              // not merged into a clinical document — they describe evidence,
+              // not a conclusion. Discrepancies in particular stay unresolved
+              // and unreviewed until the clinician rules on them.
+              const sessions = hasRefinement || hasSourceAnalysis
                 ? withSuggestion.sessions.map((s) => {
                     if (s.id !== sessionId) return s
                     const refined: SessionDraftInput = {
                       date: s.date,
                       duration: s.duration,
                       rawText: s.rawText,
+                      transcript: s.transcript,
                       interventions: interventions.trim() || s.interventions,
                       response: response.trim() || s.response,
                       plan: plan.trim() || s.plan,
                     }
-                    return { ...s, ...refined, extracted: extractFromSession(refined) }
+                    return {
+                      ...s,
+                      ...refined,
+                      extracted: extractFromSession(refined),
+                      // Union the rule-based findings with Claude's, rather than
+                      // replacing: the offline pass already found real things.
+                      transcriptOnlyEvidence: transcriptOnlyEvidence.length > 0
+                        ? Array.from(new Set([...(s.transcriptOnlyEvidence ?? []), ...transcriptOnlyEvidence]))
+                        : s.transcriptOnlyEvidence,
+                      sourceDiscrepancies: sourceDiscrepancies.length > 0
+                        ? [...(s.sourceDiscrepancies ?? []), ...sourceDiscrepancies]
+                        : s.sourceDiscrepancies,
+                      longitudinalImpact: longitudinalImpact ?? s.longitudinalImpact,
+                    }
                   })
                 : withSuggestion.sessions
 
@@ -435,6 +509,86 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       },
 
       updateAiSettings: (settings) => set({ aiSettings: settings }),
+
+      markDiscrepancyReviewed: (clientId, sessionId, discrepancyId) =>
+        set((state) => ({
+          clients: state.clients.map((c) =>
+            c.id !== clientId
+              ? c
+              : touch({
+                  ...c,
+                  sessions: c.sessions.map((s) =>
+                    s.id !== sessionId
+                      ? s
+                      : {
+                          ...s,
+                          sourceDiscrepancies: (s.sourceDiscrepancies ?? []).map((d) =>
+                            d.id === discrepancyId ? { ...d, reviewed: true } : d,
+                          ),
+                        },
+                  ),
+                }),
+          ),
+        })),
+
+      updateSyncSettings: (settings) => set({ syncSettings: settings }),
+
+      // Merge a de-identified roster feed into the workspace.
+      //
+      // Deliberately conservative: the feed owns objective facts (age, the
+      // diagnosis code list, the demographics line) and nothing else. Every
+      // narrative field — presenting concern, background, formulation, case
+      // presentation — is the clinician's own writing and is never touched, so
+      // re-syncing can't erase work. A non-empty diagnosis or demographics line
+      // is also left alone, on the same principle: the clinician's edit wins.
+      //
+      // Note this is an upsert, unlike importWorkspace, which replaces the
+      // whole workspace. Syncing must never drop a client.
+      applyRosterFeed: (feed) => {
+        const result: RosterSyncResult = { added: 0, updated: 0, unchanged: 0, addedLabels: [] }
+        const now = new Date().toISOString()
+
+        for (const incoming of feed.clients) {
+          const existing = get().clients.find((c) => c.externalRef === incoming.ref)
+          const demographics = demographicsLine(incoming)
+
+          if (!existing) {
+            const label = nextClientLabel(get().clients.map((c) => c.label))
+            get().addClient({
+              label,
+              externalRef: incoming.ref,
+              status: 'Intake',
+              age: incoming.ageYears ?? 0,
+              diagnosis: incoming.diagnosisLabel,
+              demographics,
+            })
+            result.added++
+            result.addedLabels.push(label)
+            continue
+          }
+
+          const patch: Partial<Client> = {}
+          if (incoming.ageYears !== null && existing.age !== incoming.ageYears) {
+            patch.age = incoming.ageYears
+          }
+          if (!existing.diagnosis.trim() && incoming.diagnosisLabel) {
+            patch.diagnosis = incoming.diagnosisLabel
+          }
+          if (!existing.demographics.trim() && demographics) {
+            patch.demographics = demographics
+          }
+
+          if (Object.keys(patch).length > 0) {
+            get().updateClient(existing.id, patch)
+            result.updated++
+          } else {
+            result.unchanged++
+          }
+        }
+
+        set({ syncSettings: { ...get().syncSettings, lastSyncedAt: now } })
+        return result
+      },
 
       applyFormulationDraft: (clientId, next, reasonForChange, newEvidence) => {
         set((state) => ({

@@ -13,6 +13,7 @@ import type {
   Extracted,
   FrameworkAssessment,
   LongitudinalImpact,
+  SourceDiscrepancy,
   MaintainingCycle,
   PendingSuggestion,
   PresentingConcern,
@@ -23,6 +24,7 @@ import type {
   SupervisionQuestion,
   TreatmentGoal,
 } from '../data/types'
+import { emptyLongitudinalImpact } from '../data/types'
 import { PROGRESS_DOMAINS } from '../data/types'
 import {
   BEHAVIORAL_PATTERN_KEYWORDS,
@@ -50,7 +52,8 @@ import {
 export interface SessionDraftInput {
   date: string
   duration: number
-  rawText: string
+  rawText: string       // the clinician's documented summary — required
+  transcript?: string   // verbatim session transcript — optional, deeper evidence layer
   interventions: string
   response: string
   plan: string
@@ -106,16 +109,21 @@ export function splitSessionNote(rawText: string): SplitSessionNote {
 
 // Step 2 — Extract
 export function extractFromSession(input: SessionDraftInput): Extracted {
-  const text = `${input.rawText}\n${input.interventions}\n${input.response}\n${input.plan}`
+  const transcript = input.transcript ?? ''
+  // `text` is every available source, for keyword sweeps. `spoken` is the
+  // clinician's note plus the transcript — the places the client's own words
+  // appear — used where we quote or infer from what was actually said.
+  const text = `${input.rawText}\n${transcript}\n${input.interventions}\n${input.response}\n${input.plan}`
+  const spoken = transcript ? `${input.rawText}\n${transcript}` : input.rawText
   return {
-    symptoms: detectThemes(input.rawText).slice(0, 6),
+    symptoms: dedupe([...detectThemes(input.rawText), ...detectThemes(transcript)]).slice(0, 8),
     emotions: detectEmotions(text),
-    thoughts: extractSentencesContaining(input.rawText, ['i think', 'i feel like', 'i believe', 'i keep thinking']),
-    behaviors: extractSentencesContaining(input.rawText, ['i started', 'i stopped', 'i tried', 'i avoided', 'i did']),
-    triggers: extractSentencesContaining(input.rawText, ['when', 'triggered by', 'happens after', 'set off by']).slice(0, 4),
+    thoughts: extractSentencesContaining(spoken, ['i think', 'i feel like', 'i believe', 'i keep thinking']),
+    behaviors: extractSentencesContaining(spoken, ['i started', 'i stopped', 'i tried', 'i avoided', 'i did']),
+    triggers: extractSentencesContaining(spoken, ['when', 'triggered by', 'happens after', 'set off by']).slice(0, 6),
     coping: findKeywordHits(text, COPING_KEYWORDS),
-    relationships: extractSentencesContaining(input.rawText, ['partner', 'co-parent', 'family', 'friend', 'relationship']).slice(0, 4),
-    functioning: extractSentencesContaining(input.rawText, ['sleep', 'appetite', 'work', 'school', 'daily']).slice(0, 4),
+    relationships: extractSentencesContaining(spoken, ['partner', 'co-parent', 'family', 'friend', 'relationship']).slice(0, 6),
+    functioning: extractSentencesContaining(spoken, ['sleep', 'appetite', 'work', 'school', 'daily']).slice(0, 6),
     interventions: findKeywordHits(text, INTERVENTION_KEYWORDS),
     response: input.response ? [input.response] : [],
     goals: extractSentencesContaining(input.plan, ['goal', 'aim to', 'plan to', 'homework']).slice(0, 4),
@@ -139,17 +147,244 @@ function extractSentencesContaining(text: string, markers: string[]): string[] {
     .filter(Boolean)
 }
 
-// Step 3/4 — Compare + Classify against existing themes
-export function compareThemes(newThemes: string[], existingThemes: string[]): LongitudinalImpact {
-  const confirmed = newThemes.filter((t) => existingThemes.includes(t))
-  const expanded = newThemes.filter((t) => !existingThemes.includes(t))
-  return {
-    confirmed,
-    expanded,
-    complicated: [],
-    contradicted: [],
-    changed: expanded.length > 0 ? expanded : [],
+// Language that actually asserts something has ended. Only these let the engine
+// move a theme to "resolved"; silence alone never does.
+const RESOLUTION_MARKERS = [
+  'no longer', 'has resolved', 'resolved', 'no further', 'has stopped',
+  'not reported', 'denies', 'subsided', 'remitted', 'no recurrence',
+]
+
+function dedupe(items: string[]): string[] {
+  return Array.from(new Set(items.filter(Boolean)))
+}
+
+// Step 3/4 — Compare + Classify against the whole case, not just the last session.
+//
+// Nine buckets, one per direction the evidence can move (see LongitudinalImpact).
+// The point is that a session rarely just "adds" something: it can also make a
+// standing belief look weaker, settle it, or leave it genuinely open. Recording
+// which of those happened is what lets the formulation evolve rather than be
+// rewritten each time.
+//
+// `priorSessions` is every session before this one, oldest first.
+export function compareLongitudinal(
+  newThemes: string[],
+  existingThemes: string[],
+  priorSessions: Session[],
+  sessionText = '',
+): LongitudinalImpact {
+  const now = new Set(newThemes)
+  const impact = emptyLongitudinalImpact()
+
+  // How many of the recent sessions each theme appeared in.
+  const RECENT_WINDOW = 3
+  const recent = priorSessions.slice(-RECENT_WINDOW)
+  const recentCount = new Map<string, number>()
+  for (const session of recent) {
+    for (const theme of new Set(session.extracted.symptoms)) {
+      recentCount.set(theme, (recentCount.get(theme) ?? 0) + 1)
+    }
   }
+  const everSeen = new Set(priorSessions.flatMap((s) => s.extracted.symptoms))
+
+  for (const theme of newThemes) {
+    if (!existingThemes.includes(theme) && !everSeen.has(theme)) {
+      impact.expanded.push(theme)
+      continue
+    }
+    impact.confirmed.push(theme)
+    // Present now and in most of the recent window: this looks like a pattern
+    // rather than a one-off, which is a stronger claim than "confirmed".
+    if ((recentCount.get(theme) ?? 0) >= Math.min(2, recent.length)) {
+      impact.strengthened.push(theme)
+    }
+  }
+
+  // Themes the record still asserts, but which this session did not evidence.
+  //
+  // Only themes with actual session-level history are judged here. A theme that
+  // sits in the theme list but was never extracted from any session (seeded or
+  // hand-added) has no evidence trail to reason about, and calling it "weakened"
+  // or "resolved" off a single silent session would be a fabricated conclusion.
+  //
+  // Two guards matter here, and both were learned the hard way:
+  //
+  //  1. Theme detection is keyword-based. A note that doesn't happen to use the
+  //     word "anxiety" is not evidence that the client's anxiety has gone. So
+  //     absence NEVER by itself asserts resolution — that would let the engine
+  //     announce a GAD client's anxiety as resolved because of vocabulary.
+  //     "Resolved" additionally requires the session to actually SAY something
+  //     resolved. Everything else is at most "weakened", which invites a look
+  //     rather than making a claim.
+  //
+  //  2. Only themes live in the immediately preceding session are considered.
+  //     Otherwise every theme ever recorded gets re-flagged on every quiet
+  //     session, and the signal drowns.
+  const previous = priorSessions[priorSessions.length - 1]
+  const liveLastSession = new Set(previous ? previous.extracted.symptoms : [])
+  const saysResolved = RESOLUTION_MARKERS.some((m) => sessionText.toLowerCase().includes(m))
+
+  for (const theme of existingThemes) {
+    if (now.has(theme)) continue
+    if (!everSeen.has(theme)) continue
+    if (!liveLastSession.has(theme)) continue
+
+    const absentRun = countTrailingAbsences(theme, priorSessions) + 1 // + this session
+    if (saysResolved && absentRun >= 3 && priorSessions.length >= 3) {
+      impact.resolved.push(theme)
+    } else {
+      impact.weakened.push(theme)
+    }
+  }
+
+  // A theme that keeps flickering in and out is genuinely unclear, as opposed to
+  // one that is steadily fading (weakened) or steadily gone (resolved). Judged
+  // over the full run including this session, and never double-counted against
+  // the directional buckets.
+  const settled = new Set([...impact.resolved, ...impact.weakened])
+  for (const theme of existingThemes) {
+    if (settled.has(theme)) continue
+    if (!everSeen.has(theme)) continue
+    if (isIntermittent(theme, priorSessions, now.has(theme))) impact.uncertain.push(theme)
+  }
+
+
+  // Confirmed again, yet with a history of coming and going: the session
+  // supports the theme without settling it.
+  impact.complicated = impact.confirmed.filter((t) => impact.uncertain.includes(t))
+  // Strengthening and complication are opposite readings — a theme that is still
+  // flickering has not earned "strengthened".
+  impact.strengthened = impact.strengthened.filter((t) => !impact.uncertain.includes(t))
+
+  impact.changed = [...impact.expanded, ...impact.weakened]
+  return impact
+}
+
+/** How many of the most recent sessions, counting back, lacked this theme. */
+function countTrailingAbsences(theme: string, priorSessions: Session[]): number {
+  let n = 0
+  for (let i = priorSessions.length - 1; i >= 0; i--) {
+    if (priorSessions[i].extracted.symptoms.includes(theme)) break
+    n++
+  }
+  return n
+}
+
+/** True when a theme has appeared and disappeared repeatedly rather than trending. */
+function isIntermittent(theme: string, priorSessions: Session[], presentNow: boolean): boolean {
+  if (priorSessions.length < 3) return false
+  const presence = [...priorSessions.map((s) => s.extracted.symptoms.includes(theme)), presentNow]
+  let flips = 0
+  for (let i = 1; i < presence.length; i++) if (presence[i] !== presence[i - 1]) flips++
+  // Two flips is one appearance and one disappearance, which is a trend. Three
+  // or more is genuine oscillation.
+  return flips >= 3
+}
+
+// ---------------------------------------------------------------------------
+// Transcript as a deeper evidence layer.
+//
+// The transcript is not summarized and it does not override the note. It is
+// mined for clinically meaningful material the note did not capture, and for
+// places the two sources appear to disagree. Both results are surfaced to the
+// clinician rather than folded silently into the record.
+// ---------------------------------------------------------------------------
+
+/** Evidence present in the transcript that the session note did not record. */
+export function findTranscriptOnlyEvidence(rawText: string, transcript: string): string[] {
+  if (!transcript.trim()) return []
+  const noteOnly: SessionDraftInput = { date: '', duration: 0, rawText, interventions: '', response: '', plan: '' }
+  const withBoth: SessionDraftInput = { ...noteOnly, transcript }
+  const fromNote = extractFromSession(noteOnly)
+  const fromBoth = extractFromSession(withBoth)
+
+  const added: string[] = []
+  const compare: [keyof Extracted, string][] = [
+    ['symptoms', 'Theme'],
+    ['emotions', 'Emotion'],
+    ['cognitiveDistortions', 'Cognitive pattern'],
+    ['behavioralPatterns', 'Behavioural pattern'],
+    ['relationalPatterns', 'Relational pattern'],
+    ['risks', 'Risk indicator'],
+    ['strengths', 'Strength'],
+    ['coping', 'Coping strategy'],
+    ['diagnosticConsiderations', 'Diagnostic consideration'],
+  ]
+  for (const [field, label] of compare) {
+    const before = new Set(fromNote[field] as string[])
+    for (const item of fromBoth[field] as string[]) {
+      if (!before.has(item)) added.push(`${label}: ${item} — present in the transcript, not in the session note.`)
+    }
+  }
+  return added
+}
+
+/**
+ * Flag topics where the note and the transcript appear to characterize the
+ * session differently. Deliberately conservative and deliberately unresolved:
+ * it reports the tension and leaves the reading to the clinician.
+ */
+export function detectSourceDiscrepancies(rawText: string, transcript: string): SourceDiscrepancy[] {
+  if (!transcript.trim() || !rawText.trim()) return []
+  const out: SourceDiscrepancy[] = []
+  const note = rawText.toLowerCase()
+  const script = transcript.toLowerCase()
+
+  // Valence: the note reads as progress while the transcript carries distress
+  // markers (or the reverse). Either direction is worth a second look.
+  const positive = ['improved', 'better', 'progress', 'calmer', 'more settled', 'good week', 'positive']
+  const negative = ['worse', 'struggled', 'overwhelmed', 'panic', 'hopeless', 'crying', 'distressed', 'exhausted']
+  const notePositive = positive.some((w) => note.includes(w))
+  const noteNegative = negative.some((w) => note.includes(w))
+  const scriptNegative = negative.filter((w) => script.includes(w))
+  const scriptPositive = positive.filter((w) => script.includes(w))
+
+  if (notePositive && !noteNegative && scriptNegative.length > 0) {
+    out.push({
+      id: uuidLike(),
+      topic: 'Overall session valence',
+      inNotes: 'The session note characterizes the session in largely positive terms.',
+      inTranscript: `The transcript contains distress language (${scriptNegative.join(', ')}).`,
+      note: 'The documented summary may be reading more positively than the conversation itself. Review recommended.',
+      reviewed: false,
+    })
+  }
+  if (noteNegative && !notePositive && scriptPositive.length > 0) {
+    out.push({
+      id: uuidLike(),
+      topic: 'Overall session valence',
+      inNotes: 'The session note characterizes the session in largely negative terms.',
+      inTranscript: `The transcript contains improvement language (${scriptPositive.join(', ')}).`,
+      note: 'The conversation may contain more change-talk than the summary reflects. Review recommended.',
+      reviewed: false,
+    })
+  }
+
+  // Risk is never allowed to be a silent difference between sources.
+  const riskInScript = findKeywordHits(transcript, RISK_KEYWORDS)
+  const riskInNote = findKeywordHits(rawText, RISK_KEYWORDS)
+  if (riskInScript.length > 0 && riskInNote.length === 0) {
+    out.push({
+      id: uuidLike(),
+      topic: 'Risk / safety',
+      inNotes: 'The session note records no risk or safety content.',
+      inTranscript: `The transcript contains possible risk language (${riskInScript.join(', ')}).`,
+      note: 'Confirm whether this reflects a clinical determination already made, or content that still needs documenting.',
+      reviewed: false,
+    })
+  }
+
+  return out
+}
+
+// Small local id, so this module stays free of the uuid dependency.
+function uuidLike(): string {
+  return `disc-${Math.random().toString(36).slice(2, 10)}`
+}
+
+// Retained for older callers: the two-argument comparison, without session history.
+export function compareThemes(newThemes: string[], existingThemes: string[]): LongitudinalImpact {
+  return compareLongitudinal(newThemes, existingThemes, [])
 }
 
 export function mergeThemes(existingThemes: string[], newThemes: string[]): string[] {
@@ -512,8 +747,32 @@ function truncate(s: string, n: number) {
 // Step 5 — draft candidate supervision questions in response to a session
 export function draftSupervisionQuestions(client: Client, session: Session, sig?: SignificanceResult): SupervisionQuestion[] {
   const drafts: string[] = []
-  if (session.longitudinalImpact.expanded.length) {
-    drafts.push(`New themes emerged this session (${session.longitudinalImpact.expanded.join(', ')}) — how might these reshape the working formulation?`)
+  const impact = session.longitudinalImpact
+  if (impact.expanded.length) {
+    drafts.push(`New themes emerged this session (${impact.expanded.join(', ')}) — how might these reshape the working formulation?`)
+  }
+  // The newer impact buckets each raise a different supervision question, which
+  // is the point of separating them: "weakening" and "resolving" call for very
+  // different conversations.
+  if (impact.contradicted.length) {
+    drafts.push(`This session appears to contradict established understanding around ${impact.contradicted.join(', ')} — which reading does the fuller evidence support?`)
+  }
+  if (impact.weakened.length) {
+    drafts.push(`Previously established themes (${impact.weakened.join(', ')}) did not appear this session — is this genuine change, or a documentation gap?`)
+  }
+  if (impact.resolved.length) {
+    drafts.push(`${impact.resolved.join(', ')} has been absent across recent sessions — is this resolved enough to step down as a treatment focus?`)
+  }
+  if (impact.uncertain.length) {
+    drafts.push(`Evidence on ${impact.uncertain.join(', ')} has moved back and forth across sessions — what would help settle this either way?`)
+  }
+  if (impact.strengthened.length) {
+    drafts.push(`${impact.strengthened.join(', ')} is recurring consistently — does the formulation give this the weight the pattern now warrants?`)
+  }
+  // A note/transcript divergence is a supervision matter, not a data-cleaning task.
+  for (const d of session.sourceDiscrepancies ?? []) {
+    if (d.reviewed) continue
+    drafts.push(`Possible discrepancy between the session note and the transcript regarding ${d.topic.toLowerCase()} — how should this be interpreted?`)
   }
   if (session.extracted.interventions.length === 0 && session.rawText.length > 0) {
     drafts.push('No clear intervention was identifiable in this session note — was this primarily exploratory, and is that the right call clinically?')

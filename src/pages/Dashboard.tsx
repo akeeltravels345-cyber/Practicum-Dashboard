@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, FileUp, FileDown, Settings, ArrowRight, AlertTriangle, Sparkles } from 'lucide-react'
+import { Plus, FileUp, FileDown, Settings, ArrowRight, AlertTriangle, Sparkles, RefreshCw } from 'lucide-react'
 import { PageHeader } from '../components/PageHeader'
 import { PhiBanner } from '../components/PhiBanner'
 import { ProgressBar } from '../components/ProgressBar'
@@ -10,6 +10,7 @@ import { NewClientModal } from '../components/NewClientModal'
 import { PasteSessionModal } from '../components/PasteSessionModal'
 import { PracticumSettingsModal } from '../components/PracticumSettingsModal'
 import { AiSettingsModal } from '../components/AiSettingsModal'
+import { SyncSettingsModal } from '../components/SyncSettingsModal'
 import { useWorkspaceStore } from '../state/store'
 import { totalHours, totalTarget, totalAllHours } from '../utils/practicum'
 import { downloadExport, parseImportFile } from '../services/portability'
@@ -25,8 +26,10 @@ export function Dashboard() {
   const [showPasteSession, setShowPasteSession] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showAiSettings, setShowAiSettings] = useState(false)
+  const [showSyncSettings, setShowSyncSettings] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
   const aiSettings = useWorkspaceStore((s) => s.aiSettings)
+  const syncSettings = useWorkspaceStore((s) => s.syncSettings)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const direct = totalHours(practicum, 'direct')
@@ -79,6 +82,9 @@ export function Dashboard() {
             </SecondaryButton>
             <SecondaryButton onClick={() => setShowAiSettings(true)}>
               <Sparkles size={16} /> AI Assist {aiSettings.enabled && aiSettings.apiKey ? '(on)' : '(off)'}
+            </SecondaryButton>
+            <SecondaryButton onClick={() => setShowSyncSettings(true)}>
+              <RefreshCw size={16} /> Intake Sync {syncSettings.enabled && syncSettings.token ? '(on)' : '(off)'}
             </SecondaryButton>
             <SecondaryButton onClick={handleExport}>
               <FileDown size={16} /> Export
@@ -203,6 +209,7 @@ export function Dashboard() {
       {showPasteSession && <PasteSessionModal onClose={() => setShowPasteSession(false)} />}
       {showSettings && <PracticumSettingsModal onClose={() => setShowSettings(false)} />}
       {showAiSettings && <AiSettingsModal onClose={() => setShowAiSettings(false)} />}
+      {showSyncSettings && <SyncSettingsModal onClose={() => setShowSyncSettings(false)} />}
     </div>
   )
 }

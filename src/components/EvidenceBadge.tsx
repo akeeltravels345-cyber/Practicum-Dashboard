@@ -3,14 +3,18 @@ import { classNames } from '../utils/format'
 
 const LABELS: Record<EvidenceKind, string> = {
   source: 'SOURCE',
+  extracted: 'EXTRACTED',
   synthesis: 'SYNTHESIS',
   hypothesis: 'HYPOTHESIS',
+  approved: 'APPROVED',
 }
 
 const STYLES: Record<EvidenceKind, string> = {
   source: 'tag-source',
+  extracted: 'tag-extracted',
   synthesis: 'tag-synthesis',
   hypothesis: 'tag-hypothesis',
+  approved: 'tag-approved',
 }
 
 export function EvidenceBadge({ kind, suffix, className }: { kind: EvidenceKind; suffix?: string; className?: string }) {

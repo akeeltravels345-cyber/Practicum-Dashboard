@@ -23,7 +23,9 @@ import type {
   ChangeClassification,
   Client,
   GoalStatus,
+  LongitudinalImpact,
   PendingSuggestion,
+  SourceDiscrepancy,
   ProgressDomainEntry,
   ProgressDomainName,
   ProgressTrend,
@@ -62,6 +64,11 @@ Ground rules:
 - Only propose a change to a clinical document (formulation, treatment plan, case presentation, or progress review) when the new session actually introduces evidence that would change it. If the session is consistent with the existing record, set "significant": false and leave the corresponding fields null — do not manufacture change for its own sake.
 - Always populate extractedInterventions, extractedResponse, and extractedPlan — regardless of "significant". These are a mechanical breakdown of the NEW session's raw note (not prior sessions) into what the clinician did (interventions), what the client reported or how they responded (response), and what was planned or assigned for next time (plan) — close paraphrase or direct extraction, not new interpretation. If the raw note already came with separate Interventions/Client response/Plan text (shown below), and that text already looks reasonably complete, you may leave these three fields as empty strings rather than duplicating it — only fill them in when they add real value over what's already there.
 - When you do propose a change, write reasonForChange and newEvidence fields that ground the change in specific content from the new session.
+- SOURCE HIERARCHY. Sessions may carry a SESSION NOTE alone, or a SESSION NOTE plus a RAW TRANSCRIPT. Keep them distinct at all times: the note is what the clinician chose to document, the transcript is what was actually said. Never present an inference of yours as something the client said, and never quote the transcript as though it were the clinician's note.
+- When a transcript IS present, treat it as a deeper evidence layer rather than something to summarize. Look for clinically meaningful material that did not reach the note: minimization of the client's own needs, self-blame language, what the client became activated by, in-session shifts in thinking, and which interventions the client responded to. List these in "transcriptOnlyEvidence".
+- When a transcript is present and appears to differ from the note, do NOT silently prefer one. Add an entry to "sourceDiscrepancies" describing the topic, what the note says, what the transcript suggests, and why it matters. The clinician decides the reading.
+- When no transcript is present, run exactly the same longitudinal analysis from the note alone and leave "transcriptOnlyEvidence" and "sourceDiscrepancies" as empty arrays. A missing transcript must never stop the case from being updated.
+- Classify this session's effect on existing understanding in "longitudinalImpact", using these buckets: confirms, strengthens, weakens, expands, complicates, contradicts, introduces, resolves, leavesUncertain. A bucket may be empty. Populating them is how the record shows its reasoning over time.
 - Respond with ONLY a single valid JSON object matching the schema below. No markdown code fences, no prose before or after.
 
 JSON schema (all fields required; use null/empty string/false/[] when there's no basis for a value):
@@ -75,6 +82,13 @@ JSON schema (all fields required; use null/empty string/false/[] when there's no
   "riskFlagged": boolean,
   "riskNote": string,
   "deidentificationConcern": string,
+  "transcriptOnlyEvidence": string[],
+  "sourceDiscrepancies": [{ "topic": string, "inNotes": string, "inTranscript": string, "note": string }],
+  "longitudinalImpact": {
+    "confirms": string[], "strengthens": string[], "weakens": string[], "expands": string[],
+    "complicates": string[], "contradicts": string[], "introduces": string[],
+    "resolves": string[], "leavesUncertain": string[]
+  },
   "formulation": null | {
     "presenting": string, "predisposing": string, "precipitating": string, "perpetuating": string, "protective": string,
     "workingSynthesis": string,
@@ -109,13 +123,24 @@ For "goalUpdates.matchExistingGoal": copy the exact text of the existing goal yo
 For "domainUpdates": only include domains where this session provides new evidence — omit domains with no new signal.`
 
 function formatSession(s: Session): string {
-  return [
+  const lines = [
     `Session ${s.sessionNumber} (${s.date}, ${s.duration}h):`,
-    `Raw note: ${s.rawText || '(none)'}`,
+    `SESSION NOTE (the clinician's documented summary): ${s.rawText || '(none)'}`,
+  ]
+  // The transcript is a distinct source, not extra note text. Labelling it
+  // explicitly is what lets the model reason about the two separately and
+  // notice where they diverge.
+  if (s.transcript?.trim()) {
+    lines.push(`RAW TRANSCRIPT (verbatim, what was actually said): ${s.transcript}`)
+  } else {
+    lines.push('RAW TRANSCRIPT: (not provided for this session)')
+  }
+  lines.push(
     `Interventions: ${s.interventions || '(none)'}`,
     `Client response: ${s.response || '(none)'}`,
     `Plan: ${s.plan || '(none)'}`,
-  ].join('\n')
+  )
+  return lines.join('\n')
 }
 
 export function buildAnalysisPrompt(client: Client, newSession: Session): { system: string; user: string } {
@@ -488,11 +513,67 @@ export function parseAiExtractedSections(rawText: string): { interventions: stri
   }
 }
 
+/**
+ * The two-source findings and the nine-bucket impact classification.
+ * Returned separately from the suggestion because these describe the SESSION's
+ * evidence, not a proposed edit to a clinical document — they are recorded
+ * against the session itself rather than going through suggestion review.
+ */
+export function parseAiSourceAnalysis(rawText: string): {
+  transcriptOnlyEvidence: string[]
+  sourceDiscrepancies: SourceDiscrepancy[]
+  longitudinalImpact: LongitudinalImpact | null
+} {
+  const empty = { transcriptOnlyEvidence: [], sourceDiscrepancies: [], longitudinalImpact: null }
+  try {
+    const parsed = extractJson(rawText) as Record<string, unknown>
+    if (!parsed) return empty
+
+    const discrepancies: SourceDiscrepancy[] = Array.isArray(parsed.sourceDiscrepancies)
+      ? parsed.sourceDiscrepancies
+          .filter((d): d is Record<string, unknown> => typeof d === 'object' && d !== null)
+          .map((d) => ({
+            id: uuid(),
+            topic: str(d.topic),
+            inNotes: str(d.inNotes),
+            inTranscript: str(d.inTranscript),
+            note: str(d.note),
+            reviewed: false,
+          }))
+          .filter((d) => d.topic && (d.inNotes || d.inTranscript))
+      : []
+
+    const raw = parsed.longitudinalImpact as Record<string, unknown> | undefined
+    const longitudinalImpact: LongitudinalImpact | null = raw
+      ? {
+          confirmed: strArr(raw.confirms),
+          strengthened: strArr(raw.strengthens),
+          weakened: strArr(raw.weakens),
+          expanded: strArr(raw.expands),
+          complicated: strArr(raw.complicates),
+          contradicted: strArr(raw.contradicts),
+          resolved: strArr(raw.resolves),
+          uncertain: strArr(raw.leavesUncertain),
+          changed: [...strArr(raw.introduces), ...strArr(raw.expands)],
+        }
+      : null
+
+    return {
+      transcriptOnlyEvidence: strArr(parsed.transcriptOnlyEvidence),
+      sourceDiscrepancies: discrepancies,
+      longitudinalImpact,
+    }
+  } catch {
+    return empty
+  }
+}
+
 export interface AiAnalysisResult {
   suggestion: PendingSuggestion
   supervisionQuestions: string[]
   documentationGaps: Array<{ category: string; description: string }>
   extractedSections: { interventions: string; response: string; plan: string }
+  sourceAnalysis: ReturnType<typeof parseAiSourceAnalysis>
 }
 
 export async function runAiSessionAnalysis(client: Client, session: Session, settings: AiSettings): Promise<AiAnalysisResult> {
@@ -502,7 +583,8 @@ export async function runAiSessionAnalysis(client: Client, session: Session, set
     const suggestion = parseAiResponseIntoSuggestion(rawText, client, session)
     const { questions, gaps } = parseAiSupervisionAndGaps(rawText)
     const extractedSections = parseAiExtractedSections(rawText)
-    return { suggestion, supervisionQuestions: questions, documentationGaps: gaps, extractedSections }
+    const sourceAnalysis = parseAiSourceAnalysis(rawText)
+    return { suggestion, supervisionQuestions: questions, documentationGaps: gaps, extractedSections, sourceAnalysis }
   } catch (err) {
     return {
       suggestion: {
@@ -517,6 +599,7 @@ export async function runAiSessionAnalysis(client: Client, session: Session, set
       supervisionQuestions: [],
       documentationGaps: [],
       extractedSections: { interventions: '', response: '', plan: '' },
+      sourceAnalysis: { transcriptOnlyEvidence: [], sourceDiscrepancies: [], longitudinalImpact: null },
     }
   }
 }

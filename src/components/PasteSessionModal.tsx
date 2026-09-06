@@ -21,6 +21,8 @@ export function PasteSessionModal({ fixedClientId, onClose }: { fixedClientId?: 
   const [duration, setDuration] = useState(1.0)
   const [customDuration, setCustomDuration] = useState(false)
   const [rawText, setRawText] = useState('')
+  const [transcript, setTranscript] = useState('')
+  const [showTranscript, setShowTranscript] = useState(false)
   const [interventions, setInterventions] = useState('')
   const [response, setResponse] = useState('')
   const [plan, setPlan] = useState('')
@@ -34,7 +36,7 @@ export function PasteSessionModal({ fixedClientId, onClose }: { fixedClientId?: 
 
   const client = clients.find((c) => c.id === clientId)
   const aiActive = aiSettings.enabled && !!aiSettings.apiKey.trim()
-  const piiMatches = scanForPossiblePii(`${rawText}\n${interventions}\n${response}\n${plan}`)
+  const piiMatches = scanForPossiblePii(`${rawText}\n${transcript}\n${interventions}\n${response}\n${plan}`)
   const needsConfirmation = piiMatches.length > 0
 
   function applyExtraction(next: string, force = false) {
@@ -59,7 +61,7 @@ export function PasteSessionModal({ fixedClientId, onClose }: { fixedClientId?: 
     e.preventDefault()
     if (!clientId || !rawText.trim()) return
     if (needsConfirmation && !confirmedDeidentified) return
-    const { sessionId } = addSession(clientId, { date, duration, rawText, interventions, response, plan })
+    const { sessionId } = addSession(clientId, { date, duration, rawText, transcript, interventions, response, plan })
     onClose()
     if (sessionId) navigate(`/clients/${clientId}?tab=timeline`)
   }
@@ -140,6 +142,36 @@ export function PasteSessionModal({ fixedClientId, onClose }: { fixedClientId?: 
             required
           />
         </Field>
+
+        <div className="mb-4">
+          <button
+            type="button"
+            onClick={() => setShowTranscript((v) => !v)}
+            className="inline-flex items-center gap-1.5 text-sm font-medium text-[var(--color-sage-deep)] hover:underline"
+          >
+            {showTranscript ? 'Hide' : 'Add'} session transcript (optional)
+            {!showTranscript && transcript.trim() ? ' · added' : ''}
+          </button>
+          {showTranscript && (
+            <div className="mt-2.5">
+              <div className="mb-1.5 flex items-center gap-2">
+                <EvidenceBadge kind="source" />
+                <span className="text-xs text-[var(--color-ink)]/50">verbatim — a deeper evidence layer, never a replacement for your note</span>
+              </div>
+              <Field
+                label="Session transcript"
+                hint="Optional. When present, the transcript is mined for clinically meaningful material your note did not capture, and for places the two sources appear to disagree. It is never summarized over your note, and leaving it blank changes nothing about the analysis."
+              >
+                <TextArea
+                  value={transcript}
+                  onChange={(e) => setTranscript(e.target.value)}
+                  placeholder="Paste the session transcript here…"
+                  className="min-h-[160px]"
+                />
+              </Field>
+            </div>
+          )}
+        </div>
 
         <div className="flex items-center justify-between mb-2">
           <button
