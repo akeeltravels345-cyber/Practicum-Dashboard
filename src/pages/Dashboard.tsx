@@ -11,6 +11,8 @@ import { PasteSessionModal } from '../components/PasteSessionModal'
 import { PracticumSettingsModal } from '../components/PracticumSettingsModal'
 import { AiSettingsModal } from '../components/AiSettingsModal'
 import { SyncSettingsModal } from '../components/SyncSettingsModal'
+import { BackupBanner } from '../components/BackupBanner'
+import { recordExport } from '../services/backup'
 import { useWorkspaceStore } from '../state/store'
 import { totalHours, totalTarget, totalAllHours } from '../utils/practicum'
 import { downloadExport, parseImportFile } from '../services/portability'
@@ -42,6 +44,8 @@ export function Dashboard() {
 
   function handleExport() {
     downloadExport(exportWorkspace())
+    // Counts as a real off-machine backup, which is what silences the nag.
+    recordExport()
   }
 
   function handleImportClick() {
@@ -105,6 +109,7 @@ export function Dashboard() {
 
       <div className="mb-6">
         <PhiBanner />
+        <BackupBanner />
       </div>
 
       {/* Practicum Progress */}

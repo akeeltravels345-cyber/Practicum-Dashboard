@@ -40,9 +40,12 @@ export function SyncSettingsModal({ onClose }: { onClose: () => void }) {
       const applied = applyRosterFeed(feed)
       updateSyncSettings({ ...syncSettings, enabled, endpoint: endpoint.trim(), token: token.trim() })
       const parts = [`${applied.added} added`, `${applied.updated} updated`, `${applied.unchanged} unchanged`]
+      const hours = applied.hoursEntries > 0
+        ? ` Direct hours from billing: ${applied.hoursTotal}h across ${applied.hoursEntries} client${applied.hoursEntries === 1 ? '' : 's'}.`
+        : ''
       setResult({
         ok: true,
-        message: `Synced: ${parts.join(', ')}.${applied.addedLabels.length > 0 ? ` New: ${applied.addedLabels.join(', ')}.` : ''}`,
+        message: `Synced: ${parts.join(', ')}.${applied.addedLabels.length > 0 ? ` New: ${applied.addedLabels.join(', ')}.` : ''}${hours}`,
       })
     } catch (e) {
       setResult({ ok: false, message: e instanceof SyncError ? e.message : 'Unknown error.' })

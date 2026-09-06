@@ -411,6 +411,11 @@ export interface PracticumHourEntry {
   date: string
   clientId?: string
   sessionId?: string
+  // Set when the entry was created by the billing sync rather than typed by
+  // hand. One entry per synced client, replaced in place on every sync, so
+  // re-syncing corrects the figure instead of adding the hours a second time.
+  // Hand-entered hours never carry this and are never touched by the sync.
+  syncedFromRef?: string
 }
 
 export interface PracticumSettings {

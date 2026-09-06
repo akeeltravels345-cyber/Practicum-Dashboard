@@ -23,7 +23,8 @@ import type {
 import { DEFAULT_AI_SETTINGS, DEFAULT_SYNC_SETTINGS, PRACTICUM_DATA_VERSION } from '../data/types'
 import { buildSeedClients, buildSeedPracticum } from '../data/seed'
 import type { RosterFeed } from '../services/practicumSync'
-import { demographicsLine } from '../services/practicumSync'
+import { maybeSnapshot } from '../services/backup'
+import { demographicsLine, buildSyncedHourEntries, reconcileHourEntries } from '../services/practicumSync'
 import {
   buildRuleBasedSuggestion,
   compareLongitudinal,
@@ -47,6 +48,8 @@ export interface RosterSyncResult {
   updated: number
   unchanged: number
   addedLabels: string[]
+  hoursEntries: number  // how many clients contributed billed direct hours
+  hoursTotal: number    // the total those entries represent
 }
 
 interface WorkspaceStore {
@@ -294,6 +297,15 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         }))
 
         get().generateSuggestion(clientId, sessionId)
+
+        // A new session is the point at which unsaved work becomes worth
+        // losing, so that is when a rolling snapshot is taken. Rate-limited
+        // inside maybeSnapshot, and never allowed to break the save.
+        try {
+          maybeSnapshot(get().exportWorkspace())
+        } catch {
+          /* backups are best-effort and must never fail a session save */
+        }
 
         return { sessionId }
       },
@@ -545,7 +557,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       // Note this is an upsert, unlike importWorkspace, which replaces the
       // whole workspace. Syncing must never drop a client.
       applyRosterFeed: (feed) => {
-        const result: RosterSyncResult = { added: 0, updated: 0, unchanged: 0, addedLabels: [] }
+        const result: RosterSyncResult = { added: 0, updated: 0, unchanged: 0, addedLabels: [], hoursEntries: 0, hoursTotal: 0 }
         const now = new Date().toISOString()
 
         for (const incoming of feed.clients) {
@@ -586,7 +598,33 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
           }
         }
 
-        set({ syncSettings: { ...get().syncSettings, lastSyncedAt: now } })
+        // Direct hours, reconciled from the same feed.
+        //
+        // The billing system already knows how long each session ran, so there
+        // is no reason for Nick to retype it. One entry per client, keyed by
+        // the client's ref and REPLACED on each sync — that is what makes
+        // re-syncing safe. Adding fresh entries instead would silently double
+        // his hours every time he pressed the button, which on a 200-hour
+        // requirement is the kind of error that matters.
+        //
+        // Hand-entered hours have no syncedFromRef and are left completely
+        // alone: the sync only ever owns its own rows.
+        const syncedEntries: PracticumHourEntry[] = buildSyncedHourEntries(feed, (ref) => {
+          const c = get().clients.find((x) => x.externalRef === ref)
+          return { id: c?.id, label: c?.label }
+        })
+        result.hoursEntries = syncedEntries.length
+        result.hoursTotal = syncedEntries.reduce((n, e) => n + e.amount, 0)
+        result.hoursTotal = Math.round(result.hoursTotal * 100) / 100
+
+        const practicum = get().practicum
+        set({
+          practicum: {
+            ...practicum,
+            entries: reconcileHourEntries(practicum.entries, syncedEntries),
+          },
+          syncSettings: { ...get().syncSettings, lastSyncedAt: now },
+        })
         return result
       },
 

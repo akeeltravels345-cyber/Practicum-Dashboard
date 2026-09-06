@@ -20,6 +20,35 @@ const CHECKLIST_LABELS: Record<keyof CasePresentation['checklist'], string> = {
   supervisionQuestionIdentified: 'Supervision question identified',
 }
 
+// Pulled straight from the formulation's framework assessments, so the outline's
+// "one or more theoretical perspectives" requirement is visibly met or visibly
+// missing rather than left for the clinician to remember.
+function TheoreticalPerspectives({ client }: { client: Client }) {
+  const frameworks = client.formulation.theoreticalFrameworks
+  if (frameworks.length === 0) {
+    return (
+      <p className="mt-2 text-xs text-[var(--color-clay)]">
+        No theoretical perspective recorded yet. The outline requires at least one — add it under Case Conceptualization.
+      </p>
+    )
+  }
+  return (
+    <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink)]/45">Theoretical perspective</span>
+      {frameworks.map((f) => (
+        <span
+          key={f.framework}
+          className="inline-flex items-center gap-1 rounded-full bg-[var(--color-sage-tint)] px-2.5 py-0.5 text-[11px] text-[var(--color-sage-deep)]"
+          title={f.evidence}
+        >
+          {f.framework}
+          <span className="opacity-60">· {f.role}</span>
+        </span>
+      ))}
+    </div>
+  )
+}
+
 export function CasePresentationTab({ client }: { client: Client }) {
   const updateClient = useWorkspaceStore((s) => s.updateClient)
   const recomputeComputedFields = useWorkspaceStore((s) => s.recomputeComputedFields)
@@ -60,8 +89,15 @@ export function CasePresentationTab({ client }: { client: Client }) {
         </p>
 
         <SectionCard title="Demographics">
-          <p className="text-xs text-[var(--color-ink)]/40 mb-1.5">Only what has actually been documented.</p>
-          <InlineEdit value={client.casePresentation.demographics} onSave={(v) => patch({ demographics: v })} />
+          <p className="text-xs text-[var(--color-ink)]/40 mb-1.5">
+            Age, gender, ethnicity, living situation, and the circumstances of your involvement. For macro practice, briefly describe the
+            agencies, organizations, or groups involved. Only what has actually been documented — leave out anything you are inferring.
+          </p>
+          <InlineEdit
+            value={client.casePresentation.demographics}
+            onSave={(v) => patch({ demographics: v })}
+            placeholder="Age · gender · ethnicity · living situation · how you came to be involved…"
+          />
         </SectionCard>
 
         <SectionCard title="Presenting Concerns" evidence="synthesis" evidenceSuffix="ranked by frequency and recency across sessions">
@@ -82,6 +118,10 @@ export function CasePresentationTab({ client }: { client: Client }) {
         </SectionCard>
 
         <SectionCard title="Key Findings" evidence="synthesis" evidenceSuffix="verify against source notes">
+          <p className="text-xs text-[var(--color-ink)]/40 mb-1.5">
+            What makes this a case: signs and symptoms, the environmental factors pressing on the situation, and the resources actually or
+            potentially available within it. The environmental and resource halves are easy to miss — the outline asks for both.
+          </p>
           <InlineEdit value={client.casePresentation.keyFindings} onSave={(v) => patch({ keyFindings: v })} />
         </SectionCard>
 
@@ -99,7 +139,12 @@ export function CasePresentationTab({ client }: { client: Client }) {
         </SectionCard>
 
         <SectionCard title="Formulation" evidence="synthesis" evidenceSuffix="verify against source notes">
+          <p className="text-xs text-[var(--color-ink)]/40 mb-1.5">
+            Your understanding of why things are as they are, reflecting one or more named theoretical perspectives. Uncertainty and
+            ambivalence are appropriate here — say so rather than overstating a position you cannot yet support.
+          </p>
           <InlineEdit value={client.casePresentation.formulationSummary} onSave={(v) => patch({ formulationSummary: v })} />
+          <TheoreticalPerspectives client={client} />
         </SectionCard>
 
         <SectionCard title="Emotional Presentation" evidence="hypothesis" evidenceSuffix="verify against source notes">
@@ -111,7 +156,11 @@ export function CasePresentationTab({ client }: { client: Client }) {
         </SectionCard>
 
         <SectionCard title="Reason for Presentation">
-          <p className="text-xs text-[var(--color-ink)]/40 mb-1.5">Updates if the emerging case becomes clinically different from the original presentation.</p>
+          <p className="text-xs text-[var(--color-ink)]/40 mb-1.5">
+            Why this case and not another: a unique challenge, an unusual problem, an intervention whose effectiveness it illustrates, a
+            case you want help with, or one others can learn from. Updates if the emerging case becomes clinically different from the
+            original presentation.
+          </p>
           <InlineEdit value={client.casePresentation.reasonForPresentation} onSave={(v) => patch({ reasonForPresentation: v })} />
         </SectionCard>
       </div>

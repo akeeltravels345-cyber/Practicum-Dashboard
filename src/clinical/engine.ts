@@ -227,14 +227,23 @@ export function compareLongitudinal(
   for (const theme of existingThemes) {
     if (now.has(theme)) continue
     if (!everSeen.has(theme)) continue
-    if (!liveLastSession.has(theme)) continue
 
     const absentRun = countTrailingAbsences(theme, priorSessions) + 1 // + this session
+
+    // Resolution: a sustained absence AND the session actually saying so. This
+    // is checked FIRST and independently of the "live last session" guard —
+    // by definition a theme that has been quiet for several sessions was not
+    // live in the last one, so gating it on that would make resolution
+    // unreachable. (It did, until a test caught it.)
     if (saysResolved && absentRun >= 3 && priorSessions.length >= 3) {
       impact.resolved.push(theme)
-    } else {
-      impact.weakened.push(theme)
+      continue
     }
+
+    // Weakening: a fresh change. It was there last session and is not now.
+    // Restricting to that keeps every historical theme from being re-flagged
+    // on every quiet session.
+    if (liveLastSession.has(theme)) impact.weakened.push(theme)
   }
 
   // A theme that keeps flickering in and out is genuinely unclear, as opposed to

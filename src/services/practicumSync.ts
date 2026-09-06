@@ -122,3 +122,49 @@ export function demographicsLine(c: RosterClient): string {
   else if (c.sex === 'F') bits.push('Female')
   return bits.join(' · ')
 }
+
+/**
+ * Build the direct-hour entries a feed implies.
+ *
+ * Kept pure and separate from the store because the correctness that matters
+ * here is arithmetic: these entries REPLACE the previous synced rows rather
+ * than adding to them. Appending instead would inflate Nick's hours a little
+ * more every time he pressed Sync, against a 200-hour requirement, and the
+ * error would look like progress.
+ *
+ * `labelFor` resolves a client ref to its anonymous label; entries for refs the
+ * dashboard doesn't know yet still carry the hours.
+ */
+export function buildSyncedHourEntries(
+  feed: RosterFeed,
+  labelFor: (ref: string) => { id?: string; label?: string },
+): Array<{
+  id: string
+  kind: 'direct'
+  amount: number
+  label: string
+  date: string
+  clientId?: string
+  syncedFromRef: string
+}> {
+  const out = []
+  for (const c of feed.clients) {
+    if (c.totalHours <= 0) continue
+    const { id, label } = labelFor(c.ref)
+    out.push({
+      id: `sync-${c.ref}`,
+      kind: 'direct' as const,
+      amount: c.totalHours,
+      label: `${label ?? 'Synced client'} — ${c.sessionCount} session${c.sessionCount === 1 ? '' : 's'} (from billing)`,
+      date: c.lastSessionDate ?? feed.generatedAt,
+      clientId: id,
+      syncedFromRef: c.ref,
+    })
+  }
+  return out
+}
+
+/** Replace previously synced hour rows, leaving hand-entered ones untouched. */
+export function reconcileHourEntries<T extends { syncedFromRef?: string }>(existing: T[], synced: T[]): T[] {
+  return [...existing.filter((e) => !e.syncedFromRef), ...synced]
+}

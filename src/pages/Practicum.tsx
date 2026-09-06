@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Plus, Settings, Trash2 } from 'lucide-react'
+import { Plus, Settings, Trash2, RefreshCw } from 'lucide-react'
 import { PageHeader } from '../components/PageHeader'
 import { ProgressBar } from '../components/ProgressBar'
 import { PrimaryButton, SecondaryButton } from '../components/Form'
@@ -89,13 +89,27 @@ export function Practicum() {
                   <div className="text-sm font-medium text-[var(--color-ink)] truncate">
                     {e.label} {clientLabel(e.clientId) && e.kind === 'direct' ? '' : ''}
                   </div>
-                  <div className="text-xs text-[var(--color-ink)]/45">
-                    {formatDate(e.date)} · {e.kind === 'direct' ? 'Direct' : `Indirect${e.category ? ` · ${e.category}` : ''}`}
+                  <div className="text-xs text-[var(--color-ink)]/45 flex items-center gap-1.5 flex-wrap">
+                    <span>{formatDate(e.date)} · {e.kind === 'direct' ? 'Direct' : `Indirect${e.category ? ` · ${e.category}` : ''}`}</span>
+                    {e.syncedFromRef ? (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full bg-[var(--color-beige)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink)]/55"
+                        title="Calculated from billed session durations. Refreshed on each sync — edits here are replaced."
+                      >
+                        <RefreshCw size={9} /> From billing
+                      </span>
+                    ) : null}
                   </div>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                   <span className="text-sm font-medium text-[var(--color-ink)]/80">{e.amount}h</span>
-                  <button onClick={() => removeHourEntry(e.id)} className="p-1.5 text-[var(--color-ink)]/30 hover:text-[var(--color-clay)]">
+                  <button
+                    onClick={() => removeHourEntry(e.id)}
+                    className="p-1.5 text-[var(--color-ink)]/30 hover:text-[var(--color-clay)]"
+                    title={e.syncedFromRef
+                      ? 'Remove for now. This row is calculated from billing, so the next sync will restore it.'
+                      : 'Remove this entry'}
+                  >
                     <Trash2 size={14} />
                   </button>
                 </div>
