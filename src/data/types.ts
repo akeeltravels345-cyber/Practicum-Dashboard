@@ -278,6 +278,9 @@ export interface SupervisionQuestion {
   fromSessionId?: string
   resolved: boolean
   notes?: string
+  // Picked for the next supervision meeting. Separate from `resolved` because
+  // an agenda is about what to raise, not what has been settled.
+  onAgenda?: boolean
 }
 
 export interface ClinicalLearningEntry {

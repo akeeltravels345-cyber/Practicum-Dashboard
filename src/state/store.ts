@@ -90,6 +90,8 @@ interface WorkspaceStore {
   applyCasePresentationDraft: (clientId: string, next: CasePresentation, reasonForChange: string) => void
 
   addSupervisionQuestion: (clientId: string, question: string) => void
+  toggleSupervisionAgenda: (clientId: string, questionId: string) => void
+  clearSupervisionAgenda: () => void
   toggleSupervisionResolved: (clientId: string, questionId: string) => void
   updateSupervisionNotes: (clientId: string, questionId: string, notes: string) => void
 
@@ -695,6 +697,31 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
           }),
         }))
       },
+
+      toggleSupervisionAgenda: (clientId, questionId) =>
+        set((state) => ({
+          clients: state.clients.map((c) =>
+            c.id !== clientId
+              ? c
+              : touch({
+                  ...c,
+                  supervisionQuestions: c.supervisionQuestions.map((q) =>
+                    q.id === questionId ? { ...q, onAgenda: !q.onAgenda } : q,
+                  ),
+                }),
+          ),
+        })),
+
+      // Called after a supervision meeting: empties the agenda without touching
+      // whether anything was resolved. Those are separate judgements.
+      clearSupervisionAgenda: () =>
+        set((state) => ({
+          clients: state.clients.map((c) =>
+            c.supervisionQuestions.some((q) => q.onAgenda)
+              ? touch({ ...c, supervisionQuestions: c.supervisionQuestions.map((q) => ({ ...q, onAgenda: false })) })
+              : c,
+          ),
+        })),
 
       addSupervisionQuestion: (clientId, question) => {
         set((state) => ({
