@@ -24,7 +24,7 @@ import { DEFAULT_AI_SETTINGS, DEFAULT_SYNC_SETTINGS, PRACTICUM_DATA_VERSION } fr
 import { buildSeedClients, buildSeedPracticum } from '../data/seed'
 import type { RosterFeed } from '../services/practicumSync'
 import { maybeSnapshot } from '../services/backup'
-import { demographicsLine, buildSyncedHourEntries, reconcileHourEntries } from '../services/practicumSync'
+import { demographicsLine } from '../services/practicumSync'
 import {
   buildRuleBasedSuggestion,
   compareLongitudinal,
@@ -48,8 +48,7 @@ export interface RosterSyncResult {
   updated: number
   unchanged: number
   addedLabels: string[]
-  hoursEntries: number  // how many clients contributed billed direct hours
-  hoursTotal: number    // the total those entries represent
+  staleHourRowsRemoved: number
 }
 
 interface WorkspaceStore {
@@ -559,7 +558,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       // Note this is an upsert, unlike importWorkspace, which replaces the
       // whole workspace. Syncing must never drop a client.
       applyRosterFeed: (feed) => {
-        const result: RosterSyncResult = { added: 0, updated: 0, unchanged: 0, addedLabels: [], hoursEntries: 0, hoursTotal: 0 }
+        const result: RosterSyncResult = { added: 0, updated: 0, unchanged: 0, addedLabels: [], staleHourRowsRemoved: 0 }
         const now = new Date().toISOString()
 
         for (const incoming of feed.clients) {
@@ -600,33 +599,29 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
           }
         }
 
-        // Direct hours, reconciled from the same feed.
+        // Practicum hours deliberately do NOT come from this feed.
         //
-        // The billing system already knows how long each session ran, so there
-        // is no reason for Nick to retype it. One entry per client, keyed by
-        // the client's ref and REPLACED on each sync — that is what makes
-        // re-syncing safe. Adding fresh entries instead would silently double
-        // his hours every time he pressed the button, which on a 200-hour
-        // requirement is the kind of error that matters.
+        // Nick's practicum clients are never billed, so the billing system holds
+        // no sessions for them and the feed's totalHours is always zero. Worse,
+        // the dashboard already records a Direct Hours entry from the duration
+        // on every session he pastes — so if a session ever were logged on the
+        // billing side, the same hour would be counted twice. Against a
+        // 200-hour requirement that error reads as progress.
         //
-        // Hand-entered hours have no syncedFromRef and are left completely
-        // alone: the sync only ever owns its own rows.
-        const syncedEntries: PracticumHourEntry[] = buildSyncedHourEntries(feed, (ref) => {
-          const c = get().clients.find((x) => x.externalRef === ref)
-          return { id: c?.id, label: c?.label }
-        })
-        result.hoursEntries = syncedEntries.length
-        result.hoursTotal = syncedEntries.reduce((n, e) => n + e.amount, 0)
-        result.hoursTotal = Math.round(result.hoursTotal * 100) / 100
-
+        // Hours belong to the session log, which measures time spent, not money
+        // charged. All this does now is clear rows left by the earlier version.
         const practicum = get().practicum
+        const stale = practicum.entries.filter((e) => e.syncedFromRef)
+        result.staleHourRowsRemoved = stale.length
+
         set({
-          practicum: {
-            ...practicum,
-            entries: reconcileHourEntries(practicum.entries, syncedEntries),
-          },
+          practicum:
+            stale.length > 0
+              ? { ...practicum, entries: practicum.entries.filter((e) => !e.syncedFromRef) }
+              : practicum,
           syncSettings: { ...get().syncSettings, lastSyncedAt: now },
         })
+
         return result
       },
 

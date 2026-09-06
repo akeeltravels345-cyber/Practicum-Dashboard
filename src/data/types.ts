@@ -420,10 +420,10 @@ export interface PracticumHourEntry {
   date: string
   clientId?: string
   sessionId?: string
-  // Set when the entry was created by the billing sync rather than typed by
-  // hand. One entry per synced client, replaced in place on every sync, so
-  // re-syncing corrects the figure instead of adding the hours a second time.
-  // Hand-entered hours never carry this and are never touched by the sync.
+  // Legacy. A short-lived version pulled hours from the billing feed; that was
+  // wrong, because practicum clients are never billed and the dashboard already
+  // logs the duration of every pasted session. Kept only so the sync can
+  // recognise and clear rows it created back then.
   syncedFromRef?: string
 }
 

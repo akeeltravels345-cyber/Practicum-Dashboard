@@ -44,12 +44,12 @@ export function SyncSettingsModal({ onClose }: { onClose: () => void }) {
       const applied = applyRosterFeed(feed)
       updateSyncSettings({ ...syncSettings, enabled, endpoint: endpoint.trim(), token: token.trim() })
       const parts = [`${applied.added} added`, `${applied.updated} updated`, `${applied.unchanged} unchanged`]
-      const hours = applied.hoursEntries > 0
-        ? ` Direct hours from billing: ${applied.hoursTotal}h across ${applied.hoursEntries} client${applied.hoursEntries === 1 ? '' : 's'}.`
+      const cleaned = applied.staleHourRowsRemoved > 0
+        ? ` Removed ${applied.staleHourRowsRemoved} stale hour row${applied.staleHourRowsRemoved === 1 ? '' : 's'} from an earlier version.`
         : ''
       setResult({
         ok: true,
-        message: `Synced: ${parts.join(', ')}.${applied.addedLabels.length > 0 ? ` New: ${applied.addedLabels.join(', ')}.` : ''}${hours}`,
+        message: `Synced: ${parts.join(', ')}.${applied.addedLabels.length > 0 ? ` New: ${applied.addedLabels.join(', ')}.` : ''}${cleaned}`,
       })
     } catch (e) {
       setResult({ ok: false, message: e instanceof SyncError ? e.message : 'Unknown error.' })
@@ -84,6 +84,10 @@ export function SyncSettingsModal({ onClose }: { onClose: () => void }) {
           <p>
             Syncing only adds new clients and fills blank fields. It never overwrites your formulation, case presentation, or any other
             writing, so it is always safe to re-run.
+          </p>
+          <p>
+            It does <strong>not</strong> bring across practicum hours. Your clients are not billed, so the billing system has no session
+            times for them — your hours come from the duration you enter on each session you paste, which is the right source anyway.
           </p>
         </div>
 
