@@ -98,9 +98,9 @@ describe('direct hours reconciliation', () => {
   })
 
   it('never touches hand-entered hours', () => {
-    const manual = [
-      { amount: 3, syncedFromRef: undefined, label: 'Typed by hand' },
-      { amount: 1.5, syncedFromRef: undefined, label: 'Also by hand' },
+    const manual: Array<{ amount: number; label: string; syncedFromRef?: string }> = [
+      { amount: 3, label: 'Typed by hand' },
+      { amount: 1.5, label: 'Also by hand' },
     ]
     const after = reconcileHourEntries(manual, buildSyncedHourEntries(twoClients, noLabels))
     const kept = after.filter((e) => !e.syncedFromRef)
