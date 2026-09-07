@@ -9,6 +9,23 @@ import { useWorkspaceStore } from '../../state/store'
 import { formatDate } from '../../utils/format'
 import { History, Sparkles, Plus, X, RefreshCw, AlertTriangle } from 'lucide-react'
 
+// The redesign showed a 10-point percentage stepper. Goals have no numeric
+// progress field, and adding one would create a second source of truth beside
+// `status`, so the stepper walks this ladder instead and the bar is derived.
+const GOAL_LADDER: GoalStatus[] = ['not_started', 'active', 'improving', 'partially_met', 'met']
+
+function goalProgress(status: GoalStatus): number {
+  const i = GOAL_LADDER.indexOf(status)
+  if (i >= 0) return Math.round((i / (GOAL_LADDER.length - 1)) * 100)
+  return status === 'needs_revision' ? 35 : 20 // off-ladder states: indicative only
+}
+
+function stepGoal(status: GoalStatus, dir: 1 | -1): GoalStatus {
+  const i = GOAL_LADDER.indexOf(status)
+  if (i < 0) return dir === 1 ? 'active' : 'not_started'
+  return GOAL_LADDER[Math.min(GOAL_LADDER.length - 1, Math.max(0, i + dir))]
+}
+
 const GOAL_STATUS_LABEL: Record<GoalStatus, string> = {
   not_started: 'Not Started',
   active: 'Active',
@@ -134,6 +151,25 @@ export function TreatmentPlanTab({ client }: { client: Client }) {
                   </Select>
                   <div className="flex-1">
                     <InlineEdit value={g.text} onSave={(v) => updateGoal(g.id, { text: v })} multiline={false} textClassName="font-medium" />
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      aria-label="Step goal back"
+                      onClick={() => updateGoal(g.id, { status: stepGoal(g.status, -1) })}
+                      className="grid h-6 w-6 place-items-center rounded-full border border-[var(--color-beige-deep)] text-[var(--color-ink)]/55 hover:text-[var(--color-ink)] hover:bg-[var(--color-beige)]/60"
+                    >
+                      &minus;
+                    </button>
+                    <span className="w-9 text-right text-xs tabular-nums text-[var(--color-ink)]/55">{goalProgress(g.status)}%</span>
+                    <button
+                      type="button"
+                      aria-label="Step goal forward"
+                      onClick={() => updateGoal(g.id, { status: stepGoal(g.status, 1) })}
+                      className="grid h-6 w-6 place-items-center rounded-full border border-[var(--color-beige-deep)] text-[var(--color-ink)]/55 hover:text-[var(--color-ink)] hover:bg-[var(--color-beige)]/60"
+                    >
+                      +
+                    </button>
                   </div>
                   <span className={`rounded-full px-2 py-1 text-[10px] font-semibold shrink-0 ${GOAL_STATUS_STYLE[g.status]}`}>
                     {GOAL_STATUS_LABEL[g.status]}

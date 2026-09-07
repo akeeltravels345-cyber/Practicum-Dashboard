@@ -3,6 +3,7 @@ import {
   LayoutDashboard,
   Users,
   Inbox,
+  Clock,
   Users2,
   ClipboardList,
   Presentation,
@@ -19,8 +20,9 @@ const WORKSPACE_LINKS = [
 ]
 
 const CLINICAL_LINKS = [
+  { to: '/practicum', label: 'Practicum Hours', icon: Clock },
   { to: '/supervision', label: 'Supervision', icon: Users2 },
-  { to: '/treatment-plans', label: 'Treatment Plan', icon: ClipboardList },
+  { to: '/treatment-plans', label: 'Treatment Plans', icon: ClipboardList },
   { to: '/presentations', label: 'Case Presentations', icon: Presentation },
   { to: '/learning', label: 'Clinical Learning', icon: GraduationCap },
   { to: '/gaps', label: 'Documentation Gaps', icon: AlertTriangle },
@@ -41,14 +43,14 @@ function NavSection({ title, links, onNavigate }: { title: string; links: typeof
             onClick={onNavigate}
             className={({ isActive }) =>
               classNames(
-                'flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors',
+                'flex items-center gap-2.5 rounded-lg px-3 py-[7px] text-[13.5px] transition-colors',
                 isActive
                   ? 'bg-[var(--color-sage-deep)]/25 text-[var(--color-cream)] font-medium'
                   : 'text-[var(--color-cream)]/65 hover:bg-white/5 hover:text-[var(--color-cream)]',
               )
             }
           >
-            <Icon size={16} className="shrink-0" />
+            <Icon size={17} strokeWidth={1.75} className="shrink-0" />
             <span className="truncate">{label}</span>
           </NavLink>
         ))}

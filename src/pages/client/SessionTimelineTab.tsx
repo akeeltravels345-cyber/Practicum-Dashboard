@@ -15,9 +15,22 @@ export function SessionTimelineTab({ client }: { client: Client }) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="relative space-y-4 pl-7">
+      {/* the spine, stopping at the last dot rather than running past it */}
+      {sessions.length > 1 && (
+        <span
+          aria-hidden="true"
+          className="absolute left-[7px] top-3 bottom-10 w-px bg-[var(--color-beige-deep)]"
+        />
+      )}
       {sessions.map((s) => (
-        <SessionCard key={s.id} client={client} session={s} />
+        <div key={s.id} className="relative">
+          <span
+            aria-hidden="true"
+            className="absolute -left-7 top-6 h-[13px] w-[13px] rounded-full border-2 border-[var(--color-paper)] bg-[var(--color-sage)]"
+          />
+          <SessionCard client={client} session={s} />
+        </div>
       ))}
     </div>
   )
@@ -46,7 +59,7 @@ function SessionCard({ client, session }: { client: Client; session: Session }) 
   const transcriptOnly = session.transcriptOnlyEvidence ?? []
 
   return (
-    <div className="card p-5">
+    <div className="card p-5 sm:p-6">
       <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
         <div>
           <div className="font-serif-display text-base text-[var(--color-ink)]">

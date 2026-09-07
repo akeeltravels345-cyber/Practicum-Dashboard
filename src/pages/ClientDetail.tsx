@@ -17,13 +17,19 @@ import { TreatmentPlanTab } from './client/TreatmentPlanTab'
 import { SupervisionTab } from './client/SupervisionTab'
 import { ClinicalLearningTab } from './client/ClinicalLearningTab'
 
+// The redesign proposed four tabs. Conceptualization, Case Presentation and
+// Clinical Learning were not in that set, but dropping them would make real work
+// unreachable, so they are kept and grouped after a divider instead: the four
+// everyday tabs lead, the deeper documents follow.
+const PRIMARY_TABS = ['hub', 'timeline', 'treatment', 'supervision']
+
 const TABS = [
-  { key: 'hub', label: 'Case Hub' },
-  { key: 'timeline', label: 'Session Timeline' },
-  { key: 'conceptualization', label: 'Case Conceptualization' },
-  { key: 'presentation', label: 'Case Presentation' },
+  { key: 'hub', label: 'Overview' },
+  { key: 'timeline', label: 'Sessions' },
   { key: 'treatment', label: 'Treatment Plan' },
   { key: 'supervision', label: 'Supervision' },
+  { key: 'conceptualization', label: 'Conceptualization' },
+  { key: 'presentation', label: 'Case Presentation' },
   { key: 'learning', label: 'Clinical Learning' },
 ] as const
 
@@ -82,20 +88,25 @@ export function ClientDetail() {
       </div>
 
       {/* Tabs */}
-      <div className="mb-6 -mx-1 overflow-x-auto">
-        <div className="flex gap-1 border-b border-[var(--color-beige-deep)] px-1 min-w-max">
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setSearchParams({ tab: t.key })}
-              className={`px-3.5 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${
-                activeTab === t.key
-                  ? 'border-[var(--color-sage-deep)] text-[var(--color-ink)]'
-                  : 'border-transparent text-[var(--color-ink)]/50 hover:text-[var(--color-ink)]'
-              }`}
-            >
-              {t.label}
-            </button>
+      <div className="mb-7 -mx-1 overflow-x-auto">
+        <div className="flex items-center gap-1.5 px-1 min-w-max">
+          {TABS.map((t, i) => (
+            <div key={t.key} className="flex items-center gap-1.5">
+              {/* everyday tabs, then the deeper case documents */}
+              {i > 0 && PRIMARY_TABS.includes(TABS[i - 1].key) && !PRIMARY_TABS.includes(t.key) && (
+                <span className="mx-1.5 h-5 w-px bg-[var(--color-beige-deep)]" aria-hidden="true" />
+              )}
+              <button
+                onClick={() => setSearchParams({ tab: t.key })}
+                className={`rounded-full px-3.5 py-[7px] text-[13.5px] font-medium whitespace-nowrap transition-colors ${
+                  activeTab === t.key
+                    ? 'bg-[var(--color-sage-deep)] text-[var(--color-cream)]'
+                    : 'text-[var(--color-ink)]/55 hover:bg-[var(--color-beige)]/70 hover:text-[var(--color-ink)]'
+                }`}
+              >
+                {t.label}
+              </button>
+            </div>
           ))}
         </div>
       </div>

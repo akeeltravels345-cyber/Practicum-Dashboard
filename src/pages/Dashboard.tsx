@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, FileUp, FileDown, Settings, ArrowRight, AlertTriangle, Sparkles, RefreshCw } from 'lucide-react'
+import { Plus, FileUp, FileDown, Settings, ArrowRight, AlertTriangle, Sparkles, RefreshCw, UserPlus } from 'lucide-react'
 import { PageHeader } from '../components/PageHeader'
 import { PhiBanner } from '../components/PhiBanner'
 import { ProgressBar } from '../components/ProgressBar'
@@ -12,6 +12,8 @@ import { PracticumSettingsModal } from '../components/PracticumSettingsModal'
 import { AiSettingsModal } from '../components/AiSettingsModal'
 import { SyncSettingsModal } from '../components/SyncSettingsModal'
 import { BackupBanner } from '../components/BackupBanner'
+import { MoreMenu } from '../components/MoreMenu'
+import { ThisWeek } from '../components/ThisWeek'
 import { recordExport } from '../services/backup'
 import { useWorkspaceStore } from '../state/store'
 import { totalHours, totalTarget, totalAllHours } from '../utils/practicum'
@@ -41,6 +43,14 @@ export function Dashboard() {
   const remaining = Math.max(0, target - total)
 
   const openGaps = clients.flatMap((c) => c.documentationGaps.filter((g) => !g.dismissed).map((g) => ({ ...g, client: c })))
+  const activeCount = clients.filter((c) => c.status === 'Active').length
+  const toReviewTotal = clients.reduce((n, c) => n + c.pendingSuggestions.length, 0)
+  const greeting = (() => {
+    const h = new Date().getHours()
+    if (h < 12) return 'Good morning'
+    if (h < 18) return 'Good afternoon'
+    return 'Good evening'
+  })()
 
   function handleExport() {
     downloadExport(exportWorkspace())
@@ -70,32 +80,35 @@ export function Dashboard() {
   return (
     <div>
       <PageHeader
-        eyebrow="ZNKSTR Practicum"
-        title="Clinical Case Hub"
-        subtitle="Your longitudinal clinical workspace for documentation, formulation, treatment thinking and supervision."
+        eyebrow="Case Hub"
+        title={greeting}
+        subtitle={`${activeCount} active client${activeCount === 1 ? '' : 's'} · ${toReviewTotal} item${toReviewTotal === 1 ? '' : 's'} to review`}
         actions={
           <>
-            <PrimaryButton onClick={() => setShowNewClient(true)}>
-              <Plus size={16} /> New client
-            </PrimaryButton>
-            <SecondaryButton onClick={() => setShowPasteSession(true)}>
+            <PrimaryButton onClick={() => setShowPasteSession(true)}>
               <Plus size={16} /> Paste session
+            </PrimaryButton>
+            <SecondaryButton onClick={() => setShowNewClient(true)}>
+              <UserPlus size={16} /> New client
             </SecondaryButton>
-            <SecondaryButton onClick={() => setShowSettings(true)}>
-              <Settings size={16} /> Practicum
-            </SecondaryButton>
-            <SecondaryButton onClick={() => setShowAiSettings(true)}>
-              <Sparkles size={16} /> AI Assist {aiSettings.enabled && aiSettings.apiKey ? '(on)' : '(off)'}
-            </SecondaryButton>
-            <SecondaryButton onClick={() => setShowSyncSettings(true)}>
-              <RefreshCw size={16} /> Intake Sync {syncSettings.enabled && syncSettings.token ? '(on)' : '(off)'}
-            </SecondaryButton>
-            <SecondaryButton onClick={handleExport}>
-              <FileDown size={16} /> Export
-            </SecondaryButton>
-            <SecondaryButton onClick={handleImportClick}>
-              <FileUp size={16} /> Import
-            </SecondaryButton>
+            {/* Everything that used to be its own header button still lives here. */}
+            <MoreMenu
+              items={[
+                { label: 'Practicum settings', icon: <Settings size={15} />, onSelect: () => setShowSettings(true) },
+                {
+                  label: `AI Assist ${aiSettings.enabled && aiSettings.apiKey ? '(on)' : '(off)'}`,
+                  icon: <Sparkles size={15} />,
+                  onSelect: () => setShowAiSettings(true),
+                },
+                {
+                  label: `Intake Sync ${syncSettings.enabled && syncSettings.token ? '(on)' : '(off)'}`,
+                  icon: <RefreshCw size={15} />,
+                  onSelect: () => setShowSyncSettings(true),
+                },
+                { label: 'Export workspace', icon: <FileDown size={15} />, onSelect: handleExport, separated: true },
+                { label: 'Import workspace', icon: <FileUp size={15} />, onSelect: handleImportClick },
+              ]}
+            />
             <input ref={fileInputRef} type="file" accept="application/json" onChange={handleFileChange} className="hidden" />
           </>
         }
@@ -107,20 +120,21 @@ export function Dashboard() {
         </div>
       )}
 
-      <div className="mb-6">
+      <div className="mb-7 flex flex-col gap-2.5">
         <PhiBanner />
         <BackupBanner />
       </div>
 
       {/* Practicum Progress */}
-      <section className="card p-5 sm:p-6 mb-8">
+      <section className="card p-5 sm:p-6 mb-7">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
           <div>
             <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--color-sage-deep)] mb-1">
               ZNKSTR · Practicum Progress
             </div>
-            <div className="font-serif-display text-2xl text-[var(--color-ink)]">
-              {total} / {target} hours completed
+            {/* nowrap: this heading wrapped mid-figure at narrow widths */}
+            <div className="font-serif-display text-2xl text-[var(--color-ink)] whitespace-nowrap">
+              {total} / {target} hours
             </div>
             <div className="text-sm text-[var(--color-ink)]/55 mt-0.5">
               {remaining} hours remaining · {practicum.settings.directTarget} direct + {practicum.settings.indirectTarget} indirect target
@@ -154,12 +168,14 @@ export function Dashboard() {
         </div>
       </section>
 
-      <div className="grid lg:grid-cols-3 gap-6">
+      <ThisWeek clients={clients} />
+
+      <div className="grid lg:grid-cols-3 gap-7">
         <section className="lg:col-span-2">
-          <h2 className="font-serif-display text-lg text-[var(--color-ink)] mb-3">Clients</h2>
+          <h2 className="font-serif-display text-lg text-[var(--color-ink)] mb-3.5">Clients</h2>
           <div className="grid sm:grid-cols-2 gap-4">
             {clients.map((c) => (
-              <Link key={c.id} to={`/clients/${c.id}`} className="card p-4 hover:shadow-md transition-shadow block">
+              <Link key={c.id} to={`/clients/${c.id}`} className="card p-5 hover:shadow-md transition-shadow block">
                 <div className="flex items-start justify-between gap-2 mb-1.5">
                   <span className="font-serif-display text-base text-[var(--color-ink)]">{c.label}</span>
                   <div className="flex items-center gap-1.5 shrink-0">
@@ -186,8 +202,8 @@ export function Dashboard() {
         </section>
 
         <section>
-          <h2 className="font-serif-display text-lg text-[var(--color-ink)] mb-3">Documentation Gaps</h2>
-          <div className="card p-4">
+          <h2 className="font-serif-display text-lg text-[var(--color-ink)] mb-3.5">Needs attention</h2>
+          <div className="card p-5">
             {openGaps.length === 0 ? (
               <p className="text-sm text-[var(--color-ink)]/50">No open documentation prompts.</p>
             ) : (

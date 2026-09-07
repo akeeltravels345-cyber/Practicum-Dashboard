@@ -13,3 +13,6 @@ dist-standalone/
 # OS / editor
 .DS_Store
 *.log
+
+# Design handoffs dropped into the repo root while working
+*.zip

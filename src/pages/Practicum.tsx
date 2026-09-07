@@ -8,6 +8,7 @@ import { PracticumSettingsModal } from '../components/PracticumSettingsModal'
 import { useWorkspaceStore } from '../state/store'
 import { totalHours, totalAllHours, totalTarget } from '../utils/practicum'
 import { formatDate } from '../utils/format'
+import { WeeklyHoursChart } from '../components/WeeklyHoursChart'
 
 export function Practicum() {
   const practicum = useWorkspaceStore((s) => s.practicum)
@@ -77,6 +78,10 @@ export function Practicum() {
         </div>
       </div>
 
+
+      <div className="mb-7">
+        <WeeklyHoursChart entries={practicum.entries} />
+      </div>
       <h2 className="font-serif-display text-lg text-[var(--color-ink)] mb-3">Hour Log</h2>
       <div className="card overflow-hidden">
         {entries.length === 0 ? (

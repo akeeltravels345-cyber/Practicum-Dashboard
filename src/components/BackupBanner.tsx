@@ -30,14 +30,23 @@ export function BackupBanner() {
   }
 
   if (!nag && !showHistory) {
-    return hasWork ? (
-      <button
-        onClick={() => setShowHistory(true)}
-        className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-ink)]/45 hover:text-[var(--color-ink)]"
-      >
-        <History size={12} /> Backups
-      </button>
-    ) : null
+    if (!hasWork) return null
+    return (
+      <div className="flex items-center gap-2 text-xs text-[var(--color-ink)]/45">
+        <History size={12} className="shrink-0" />
+        <span>
+          {days === null ? 'No backup saved yet' : days === 0 ? 'Backed up today' : `Last backup ${days} day${days === 1 ? '' : 's'} ago`}
+        </span>
+        <span aria-hidden="true">·</span>
+        <button onClick={handleExport} className="font-medium text-[var(--color-sage-deep)] hover:underline">
+          Save one now
+        </button>
+        <span aria-hidden="true">·</span>
+        <button onClick={() => setShowHistory(true)} className="hover:text-[var(--color-ink)]">
+          Snapshots
+        </button>
+      </div>
+    )
   }
 
   return (
