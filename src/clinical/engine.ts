@@ -25,7 +25,9 @@ import type {
   TreatmentGoal,
 } from '../data/types'
 import { emptyLongitudinalImpact } from '../data/types'
-import { PROGRESS_DOMAINS } from '../data/types'
+import { PROGRESS_DOMAINS, CASE_PRESENTATION_POLICY } from '../data/types'
+import type { ProposedChange, TreatmentPlan } from '../data/types'
+import { changesFromFields, inference, rebuildEvidenceSummary, sessionCitations } from './provenance'
 import {
   BEHAVIORAL_PATTERN_KEYWORDS,
   COGNITIVE_DISTORTION_KEYWORDS,
@@ -301,7 +303,7 @@ function isIntermittent(theme: string, priorSessions: Session[], presentNow: boo
 
 /** Evidence present in the transcript that the session note did not record. */
 export function findTranscriptOnlyEvidence(rawText: string, transcript: string): string[] {
-  if (!transcript.trim()) return []
+  if (!transcript.trim() || !rawText.trim()) return []
   const noteOnly: SessionDraftInput = { date: '', duration: 0, rawText, interventions: '', response: '', plan: '' }
   const withBoth: SessionDraftInput = { ...noteOnly, transcript }
   const fromNote = extractFromSession(noteOnly)
@@ -322,7 +324,7 @@ export function findTranscriptOnlyEvidence(rawText: string, transcript: string):
   for (const [field, label] of compare) {
     const before = new Set(fromNote[field] as string[])
     for (const item of fromBoth[field] as string[]) {
-      if (!before.has(item)) added.push(`${label}: ${item} — present in the transcript, not in the session note.`)
+      if (!before.has(item)) added.push(`${label}: ${item}, present in the transcript but not in the session note.`)
     }
   }
   return added
@@ -448,13 +450,27 @@ export function evaluateSessionSignificance(client: Client, session: Session): S
   const newBehavioralPatterns = session.extracted.behavioralPatterns.filter((l) => !client.formulation.behavioralPatternLabels.includes(l))
   const newRelationalPatterns = session.extracted.relationalPatterns.filter((l) => !client.formulation.relationalPatternLabels.includes(l))
 
-  if (session.longitudinalImpact.expanded.length) reasons.push(`New theme(s): ${session.longitudinalImpact.expanded.join(', ')}`)
+  const impact = session.longitudinalImpact
+  if (impact.expanded.length) reasons.push(`New theme(s): ${impact.expanded.join(', ')}`)
+  // A session that shifts existing understanding is as significant as one that
+  // adds to it. "Confirms" alone is not: that is the case where the right
+  // answer is that the current formulation still holds.
+  if (impact.strengthened.length) reasons.push(`Strengthens: ${impact.strengthened.join(', ')}`)
+  if (impact.weakened.length) reasons.push(`Weakens: ${impact.weakened.join(', ')}`)
+  if (impact.contradicted.length) reasons.push(`Contradicts: ${impact.contradicted.join(', ')}`)
+  if (impact.resolved.length) reasons.push(`Possibly resolving: ${impact.resolved.join(', ')}`)
+  if (impact.uncertain.length) reasons.push(`Leaves uncertain: ${impact.uncertain.join(', ')}`)
+  // What the transcript surfaced beyond the note is new evidence by definition.
+  if (session.transcriptOnlyEvidence?.length) {
+    reasons.push(`Transcript adds ${session.transcriptOnlyEvidence.length} item${session.transcriptOnlyEvidence.length === 1 ? '' : 's'} not in the note`)
+  }
+  if (session.sourceDiscrepancies?.some((d) => !d.reviewed)) reasons.push('Note and transcript disagree; see the session')
   if (session.extracted.risks.length) reasons.push('Risk-related language flagged')
   if (newCognitivePatterns.length) reasons.push(`New cognitive pattern(s): ${newCognitivePatterns.join(', ')}`)
   if (newBehavioralPatterns.length) reasons.push(`New behavioral pattern(s): ${newBehavioralPatterns.join(', ')}`)
   if (newRelationalPatterns.length) reasons.push(`New relational pattern(s): ${newRelationalPatterns.join(', ')}`)
 
-  const text = `${session.rawText} ${session.response} ${session.plan}`.toLowerCase()
+  const text = `${session.rawText} ${session.transcript ?? ''} ${session.response} ${session.plan}`.toLowerCase()
   const improving = IMPROVING_MARKERS.some((m) => text.includes(m))
   const worsening = WORSENING_MARKERS.some((m) => text.includes(m))
   let progressSignal: 'improving' | 'worsening' | null = null
@@ -479,18 +495,11 @@ export function evaluateSessionSignificance(client: Client, session: Session): S
 // Only called when evaluateSessionSignificance() found genuinely new evidence.
 // Integrates the new evidence into the existing synthesis rather than merely
 // logging that a session occurred.
-export function draftIntegratedSynthesis(client: Client, session: Session, sig: SignificanceResult): string {
-  const prior = client.formulation.workingSynthesis?.trim()
-  const sessionLabel = `Session ${session.sessionNumber} (${session.date})`
-  const reasonText = sig.reasons.join('; ')
-  const riskNote = session.extracted.risks.length
-    ? ' Risk-related language was flagged — verify against source documentation and follow standard risk/safety protocol; this is an automated flag, not a risk determination.'
-    : ''
-  return [
-    prior || 'Working synthesis not yet established.',
-    '',
-    `[Updated following ${sessionLabel}] New evidence (${reasonText}) has been integrated into the working hypothesis above.${riskNote} This remains a working synthesis — verify against source documentation.`,
-  ].join('\n')
+export function draftIntegratedSynthesis(client: Client, _session: Session, _sig: SignificanceResult): string {
+  // Rebuilt from the whole record each time rather than appended to; see
+  // rebuildEvidenceSummary for why. `client.sessions` already holds this session.
+  const ordered = [...client.sessions].sort((a, b) => a.sessionNumber - b.sessionNumber)
+  return rebuildEvidenceSummary(client, ordered)
 }
 
 // Builds the four-part "Clinical Evolution" record (spec §7) for a
@@ -600,7 +609,7 @@ function computeSingleDomain(domain: ProgressDomainName, sessions: Session[]): P
   const keywords = DOMAIN_RELEVANCE_KEYWORDS[domain] ?? []
   const matches: { sessionNumber: number; sentence: string }[] = []
   for (const s of sessions) {
-    const text = `${s.rawText} ${s.response} ${s.plan}`
+    const text = `${s.rawText} ${s.transcript ?? ''} ${s.response} ${s.plan}`
     const sentences = text.split(/(?<=[.!?])\s+/)
     for (const sentence of sentences) {
       const lower = sentence.toLowerCase()
@@ -907,30 +916,121 @@ export function buildRuleBasedSuggestion(client: Client, session: Session): Pend
   const aggregates = computeClientAggregates(hypothetical)
   const nextCurrentPicture = draftCurrentClinicalPicture(client, session, sig)
 
+  // Evidence for everything below: sentences the extraction actually matched,
+  // labelled note or transcript, plus the engine's own reasoning labelled as
+  // inference so it is never read as something the client said.
+  const cited = sessionCitations(session)
+  const why = sig.reasons.join('; ')
+  const evidence = [...cited, inference(`Offline analysis: ${why}.`, session)]
+
+  const nextFormulation = aggregates.formulation
+  const f0 = client.formulation
+  const formulationChanges = changesFromFields(
+    [
+      { field: 'workingSynthesis', label: 'Overall case summary', before: f0.workingSynthesis, after: nextFormulation.workingSynthesis },
+      { field: 'cognitivePatterns', label: 'Cognitive patterns', before: f0.cognitivePatterns, after: nextFormulation.cognitivePatterns },
+      { field: 'emotionalPatterns', label: 'Emotional patterns', before: f0.emotionalPatterns, after: nextFormulation.emotionalPatterns },
+      { field: 'behavioralPatterns', label: 'Behavioural patterns', before: f0.behavioralPatterns, after: nextFormulation.behavioralPatterns },
+      { field: 'relationalPatterns', label: 'Relational patterns', before: f0.relationalPatterns, after: nextFormulation.relationalPatterns },
+      {
+        field: 'maintainingCycle',
+        label: 'Maintaining cycle',
+        before: Object.values(f0.maintainingCycle).join(' → '),
+        after: Object.values(nextFormulation.maintainingCycle).join(' → '),
+      },
+    ],
+    session,
+    why,
+    evidence,
+  )
+
+  // Case presentation: only sections marked 'session' may move. The intake
+  // sections wait for the TIFEC connection rather than being guessed at.
+  const cp0 = client.casePresentation
+  const cpDraft = { ...aggregates.casePresentation, currentClinicalPicture: nextCurrentPicture }
+  for (const [key, policy] of Object.entries(CASE_PRESENTATION_POLICY)) {
+    if (policy === 'intake') (cpDraft as Record<string, unknown>)[key] = (cp0 as unknown as Record<string, unknown>)[key]
+  }
+  const casePresentationChanges = changesFromFields(
+    [
+      { field: 'currentClinicalPicture', label: 'Current clinical picture', before: cp0.currentClinicalPicture, after: cpDraft.currentClinicalPicture },
+      { field: 'emotionalPresentation', label: 'Emotional presentation', before: cp0.emotionalPresentation, after: cpDraft.emotionalPresentation },
+      { field: 'keyFindings', label: 'Key findings', before: cp0.keyFindings, after: cpDraft.keyFindings },
+    ],
+    session,
+    why,
+    evidence,
+  )
+
   const suggestion: PendingSuggestion = {
     ...base,
-    summary: `Session ${session.sessionNumber} introduced new evidence: ${sig.reasons.join('; ')}. Proposed updates below are drafted from this evidence — review each before it becomes part of the client's record.`,
+    summary: `Session ${session.sessionNumber} introduced new evidence: ${sig.reasons.join('; ')}. Proposed updates below are drafted from this evidence. Review each before it becomes part of the client's record.`,
     formulation: {
       status: 'pending',
-      draft: aggregates.formulation,
+      draft: nextFormulation,
       reasonForChange: evolutionFields.reasonForChange,
       newEvidence: evolutionFields.newEvidence,
+      changes: formulationChanges,
     },
     casePresentation: {
       status: 'pending',
-      draft: { ...aggregates.casePresentation, currentClinicalPicture: nextCurrentPicture },
+      draft: cpDraft,
       reasonForChange: sig.reasons.join('; '),
       newEvidence: evolutionFields.newEvidence,
+      changes: casePresentationChanges,
     },
   }
 
-  const goalsChanged = JSON.stringify(aggregates.treatmentPlan.goals) !== JSON.stringify(client.treatmentPlan.goals)
-  if (goalsChanged) {
+  // Treatment plan. The offline engine cannot judge whether an intervention is
+  // working, so it does two honest things: flags goals that no longer connect
+  // to current themes, and names emerging needs no goal covers yet. It does not
+  // invent goals; a need is proposed as a focus for the clinician to act on.
+  const nextPlan: TreatmentPlan = { ...aggregates.treatmentPlan }
+  const planChanges: ProposedChange[] = []
+
+  for (const g of aggregates.treatmentPlan.goals) {
+    const was = client.treatmentPlan.goals.find((x) => x.id === g.id)
+    if (was && g.flaggedForReview && !was.flaggedForReview) {
+      planChanges.push(
+        ...changesFromFields(
+          [{ field: `goal:${g.id}`, label: `Goal: ${truncate(g.text, 60)}`, before: 'On track', after: 'Flagged for review' }],
+          session,
+          g.flagReason || 'This goal no longer clearly connects to the current themes.',
+          evidence,
+          () => 'uncertain',
+        ),
+      )
+    }
+  }
+
+  const goalText = client.treatmentPlan.goals.map((g) => `${g.text} ${g.objectives}`.toLowerCase()).join(' ')
+  const uncovered = [...session.longitudinalImpact.strengthened, ...session.longitudinalImpact.expanded]
+    .filter((t, i, all) => all.indexOf(t) === i)
+    .filter((t) => !goalText.includes(t.toLowerCase()))
+  if (uncovered.length) {
+    const need = `Emerging need not yet covered by a goal: ${uncovered.join(', ')}. Consider whether it warrants its own goal.`
+    const before = client.treatmentPlan.nextClinicalFocus
+    if (!before.includes(need)) {
+      nextPlan.nextClinicalFocus = before.trim() ? `${before.trim()}\n\n${need}` : need
+      planChanges.push(
+        ...changesFromFields(
+          [{ field: 'nextClinicalFocus', label: 'New treatment need', before, after: nextPlan.nextClinicalFocus }],
+          session,
+          `${uncovered.join(', ')} ${uncovered.length === 1 ? 'is' : 'are'} strengthening or newly raised and no current goal addresses ${uncovered.length === 1 ? 'it' : 'them'}.`,
+          evidence,
+          () => 'adds',
+        ),
+      )
+    }
+  }
+
+  if (planChanges.length) {
     suggestion.treatmentPlan = {
       status: 'pending',
-      draft: aggregates.treatmentPlan,
-      reasonForChange: 'One or more goals no longer clearly connect to current themes, patterns, or the treatment rationale and were flagged for review.',
+      draft: nextPlan,
+      reasonForChange: planChanges.map((c) => c.why).join(' '),
       newEvidence: evolutionFields.newEvidence,
+      changes: planChanges,
     }
   }
 

@@ -8,6 +8,7 @@ import { Field, TextArea, PrimaryButton, SecondaryButton } from '../../component
 import { useWorkspaceStore } from '../../state/store'
 import { formatDate } from '../../utils/format'
 import { History, RefreshCw, Sparkles } from 'lucide-react'
+import { VersionProvenance } from '../../components/VersionProvenance'
 
 const FIVE_P: Array<{ key: keyof Pick<Formulation, 'presenting' | 'predisposing' | 'precipitating' | 'perpetuating' | 'protective'>; label: string; hint: string }> = [
   { key: 'presenting', label: 'Presenting', hint: 'Current symptoms and difficulties.' },
@@ -60,11 +61,11 @@ export function CaseConceptualizationTab({ client }: { client: Client }) {
         ))}
       </div>
 
-      <SectionCard title="Formulation Gaps / Contradictions">
+      <SectionCard title="Still Uncertain / Contradictions">
         <InlineEdit
           value={client.formulation.gaps}
           onSave={(v) => patchFormulation({ gaps: v })}
-          placeholder="No gaps or contradictions noted yet."
+          placeholder="Nothing flagged as uncertain or contradictory yet."
         />
       </SectionCard>
 
@@ -214,6 +215,7 @@ function ClinicalEvolutionModal({ client, onClose }: { client: Client; onClose: 
                   <div className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink)]/40">Current Understanding</div>
                   <div className="text-[var(--color-ink)]/75">{v.currentUnderstanding}</div>
                 </div>
+                <VersionProvenance client={client} sessionId={v.sessionId} changes={v.changes} />
               </div>
             </div>
           ))}

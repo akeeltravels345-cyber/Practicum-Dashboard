@@ -3,6 +3,7 @@ import type { Client, PendingSuggestion, SuggestionFieldKey } from '../data/type
 import { useWorkspaceStore } from '../state/store'
 import { SecondaryButton } from './Form'
 import { formatDate } from '../utils/format'
+import { ChangeList } from './ChangeList'
 
 const TREND_LABEL: Record<string, string> = {
   improving: 'Improving',
@@ -85,12 +86,18 @@ function FormulationSection({ client, suggestion }: { client: Client; suggestion
           onReject={() => reject(client.id, suggestion.id, 'formulation')}
         />
       </div>
-      <FieldCompare label="Working synthesis" current={client.formulation.workingSynthesis} proposed={field.draft.workingSynthesis} />
-      <p className="text-xs text-[var(--color-ink)]/50 italic">
-        Also updates the 5-P summary, pattern narratives, maintaining cycle, and theoretical frameworks to match the reasoning above — reviewable in
-        full on the Case Conceptualization tab once approved.
-      </p>
-      {field.reasonForChange && <p className="text-xs text-[var(--color-ink)]/55 mt-2"><strong>Why:</strong> {field.reasonForChange}</p>}
+      {field.changes ? (
+        <ChangeList changes={field.changes} />
+      ) : (
+        <>
+          <FieldCompare label="Working synthesis" current={client.formulation.workingSynthesis} proposed={field.draft.workingSynthesis} />
+          <p className="text-xs text-[var(--color-ink)]/50 italic">
+            Also updates the 5-P summary, pattern narratives, maintaining cycle and theoretical frameworks. Reviewable in full on the
+            Conceptualization tab once approved.
+          </p>
+          {field.reasonForChange && <p className="text-xs text-[var(--color-ink)]/55 mt-2"><strong>Why:</strong> {field.reasonForChange}</p>}
+        </>
+      )}
     </div>
   )
 }
@@ -111,15 +118,21 @@ function TreatmentPlanSection({ client, suggestion }: { client: Client; suggesti
           onReject={() => reject(client.id, suggestion.id, 'treatmentPlan')}
         />
       </div>
-      <FieldCompare label="Presenting / treatment focus" current={client.treatmentPlan.presentingFocus} proposed={field.draft.presentingFocus} />
-      <FieldCompare label="Working clinical rationale" current={client.treatmentPlan.rationale} proposed={field.draft.rationale} />
-      <FieldCompare label="Next clinical focus" current={client.treatmentPlan.nextClinicalFocus} proposed={field.draft.nextClinicalFocus} />
+      {field.changes ? (
+        <div className="mb-2"><ChangeList changes={field.changes} /></div>
+      ) : (
+        <>
+          <FieldCompare label="Presenting / treatment focus" current={client.treatmentPlan.presentingFocus} proposed={field.draft.presentingFocus} />
+          <FieldCompare label="Working clinical rationale" current={client.treatmentPlan.rationale} proposed={field.draft.rationale} />
+          <FieldCompare label="Next clinical focus" current={client.treatmentPlan.nextClinicalFocus} proposed={field.draft.nextClinicalFocus} />
+        </>
+      )}
       <p className="text-xs text-[var(--color-ink)]/50 italic">
         {goalCountChanged
-          ? `Goal list would change (${client.treatmentPlan.goals.length} → ${field.draft.goals.length} goals) — review on the Treatment Plan tab after approving.`
-          : 'Individual goal statuses/evidence may also be refreshed — review on the Treatment Plan tab after approving.'}
+          ? `Goal list would change (${client.treatmentPlan.goals.length} → ${field.draft.goals.length} goals). Review on the Treatment Plan tab after approving.`
+          : 'Individual goal statuses and evidence may also be refreshed. Review on the Treatment Plan tab after approving.'}
       </p>
-      {field.reasonForChange && <p className="text-xs text-[var(--color-ink)]/55 mt-2"><strong>Why:</strong> {field.reasonForChange}</p>}
+      {!field.changes && field.reasonForChange && <p className="text-xs text-[var(--color-ink)]/55 mt-2"><strong>Why:</strong> {field.reasonForChange}</p>}
     </div>
   )
 }
@@ -139,9 +152,15 @@ function CasePresentationSection({ client, suggestion }: { client: Client; sugge
           onReject={() => reject(client.id, suggestion.id, 'casePresentation')}
         />
       </div>
-      <FieldCompare label="Current clinical picture" current={client.casePresentation.currentClinicalPicture} proposed={field.draft.currentClinicalPicture} />
-      <FieldCompare label="Formulation summary" current={client.casePresentation.formulationSummary} proposed={field.draft.formulationSummary} />
-      {field.reasonForChange && <p className="text-xs text-[var(--color-ink)]/55 mt-2"><strong>Why:</strong> {field.reasonForChange}</p>}
+      {field.changes ? (
+        <ChangeList changes={field.changes} />
+      ) : (
+        <>
+          <FieldCompare label="Current clinical picture" current={client.casePresentation.currentClinicalPicture} proposed={field.draft.currentClinicalPicture} />
+          <FieldCompare label="Formulation summary" current={client.casePresentation.formulationSummary} proposed={field.draft.formulationSummary} />
+          {field.reasonForChange && <p className="text-xs text-[var(--color-ink)]/55 mt-2"><strong>Why:</strong> {field.reasonForChange}</p>}
+        </>
+      )}
     </div>
   )
 }

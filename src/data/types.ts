@@ -91,7 +91,10 @@ export interface Session {
   sessionNumber: number
   date: string // ISO date
   duration: number // hours
-  rawText: string        // the clinician's documented summary (SuperNotes) — required
+  // The clinician's documented summary (SuperNotes). May be empty when the
+  // session was entered from a transcript alone; a session needs at least one of
+  // the two. Both, when present, are two evidence sources for ONE session.
+  rawText: string
   // Verbatim transcript of the session, when the clinician has one. Optional by
   // design: the full longitudinal pipeline runs either way. When present it is
   // treated as a deeper evidence layer, not as a replacement for the note.
@@ -166,6 +169,7 @@ export interface FormulationVersion {
   // "Clinical Evolution" fields — the plain-language 4-part change record.
   currentUnderstanding: string
   sessionId?: string
+  changes?: ProposedChange[]   // what the clinician approved, with its evidence
 }
 
 export type GoalStatus = 'not_started' | 'active' | 'improving' | 'partially_met' | 'met' | 'needs_revision' | 'on_hold'
@@ -196,6 +200,8 @@ export interface TreatmentPlanVersion {
   previous: TreatmentPlan
   newEvidence: string
   reasonForChange: string
+  sessionId?: string
+  changes?: ProposedChange[]
 }
 
 export type ChangeClassification = 'improvement' | 'maintenance' | 'deterioration' | 'no_change' | 'insufficient_evidence'
@@ -269,6 +275,8 @@ export interface CasePresentationVersion {
   date: string
   previous: CasePresentation
   reasonForChange: string
+  sessionId?: string
+  changes?: ProposedChange[]
 }
 
 export interface SupervisionQuestion {
@@ -312,11 +320,70 @@ export type PendingSuggestionStatus = 'analyzing' | 'ready' | 'error'
 // proposed replacement value (never a partial patch) so the review UI can
 // show a clean current-vs-proposed comparison. Nothing here touches the
 // live record until the clinician calls approveSuggestionField().
+// Where a piece of evidence came from. This is the distinction the clinician
+// needs to see on every proposed change: what the client actually said, what
+// the clinician chose to document, what arrived with intake, and what the
+// engine or AI inferred. "Approved" is not a source; it is what happens to a
+// change once the clinician accepts it, and is recorded on the version.
+export type EvidenceSource = 'transcript' | 'note' | 'intake' | 'inference'
+
+export const EVIDENCE_SOURCE_LABEL: Record<EvidenceSource, string> = {
+  transcript: 'Client said',
+  note: 'You documented',
+  intake: 'Intake',
+  inference: 'Inferred',
+}
+
+export interface EvidenceCitation {
+  text: string            // the quote or observation
+  source: EvidenceSource
+  sessionId?: string      // absent for intake evidence
+  sessionNumber?: number
+}
+
+// What a session does to one piece of the record. Mirrors the longitudinal
+// buckets, plus the edit verbs a document change needs.
+export type ChangeKind =
+  | 'confirms' | 'strengthens' | 'weakens' | 'adds' | 'contradicts'
+  | 'revises' | 'removes' | 'uncertain'
+
+export const CHANGE_KIND_LABEL: Record<ChangeKind, string> = {
+  confirms: 'Confirms',
+  strengthens: 'Strengthens',
+  weakens: 'Weakens',
+  adds: 'Adds',
+  contradicts: 'Contradicts',
+  revises: 'Revises',
+  removes: 'Removes',
+  uncertain: 'Leaves uncertain',
+}
+
+/**
+ * One proposed change, fully traceable: what changed, why, what evidence
+ * caused it, and which session that evidence came from. A document-level
+ * suggestion carries a list of these so each change can be read on its own
+ * rather than hidden inside a rewritten block of text.
+ */
+export interface ProposedChange {
+  id: string
+  field: string           // e.g. 'perpetuating', 'maintainingCycle', 'goal:<text>'
+  label: string           // human name for the field, e.g. 'Perpetuating factors'
+  kind: ChangeKind
+  before: string
+  after: string
+  why: string
+  evidence: EvidenceCitation[]
+  sessionId: string
+  sessionNumber: number
+}
+
 export interface SuggestedFieldDraft<T> {
   status: SuggestionFieldStatus
   draft: T
   reasonForChange: string
   newEvidence: string
+  // Optional so suggestions saved before this existed still load.
+  changes?: ProposedChange[]
 }
 
 // The bundle of proposed updates generated after a new session is pasted —
@@ -381,6 +448,46 @@ export const DEFAULT_SYNC_SETTINGS: SyncSettings = {
   lastSyncedAt: null,
 }
 
+/**
+ * Intake information from the TIFEC app, once that connection exists.
+ *
+ * Kept generic on purpose. Which intake answers should feed which part of the
+ * case is not decided yet, so this holds labelled sections rather than a fixed
+ * set of fields the Hub would have to guess at. Like the roster feed, it must
+ * arrive de-identified: TIFEC intake answers contain names and dates of birth,
+ * and this app stores everything in plain browser storage.
+ */
+export interface IntakeSnapshot {
+  source: 'tifec'
+  receivedAt: string
+  sections: Array<{ key: string; label: string; text: string }>
+}
+
+// Which case presentation sections sessions may propose changes to.
+//
+// 'session': rewritten as the case develops, through the usual review step.
+// 'intake':  left alone by session analysis for now. These are the sections
+//            that come from intake in practice, and the Hub does not have the
+//            intake yet, so proposing changes to them from session notes would
+//            be guessing. They stay editable by hand. When the TIFEC connection
+//            lands, this is the one place to decide how each should update.
+export type CasePresentationSectionPolicy = 'session' | 'intake'
+
+export const CASE_PRESENTATION_POLICY: Record<
+  'demographics' | 'background' | 'keyFindings' | 'currentClinicalPicture' | 'formulationSummary'
+  | 'emotionalPresentation' | 'interventionsAndPlans' | 'reasonForPresentation',
+  CasePresentationSectionPolicy
+> = {
+  demographics: 'intake',
+  background: 'intake',
+  keyFindings: 'session',
+  currentClinicalPicture: 'session',
+  formulationSummary: 'session',
+  emotionalPresentation: 'session',
+  interventionsAndPlans: 'session',
+  reasonForPresentation: 'session',
+}
+
 export interface Client {
   id: string
   label: string // "Client K" / "Client L" — never a real name
@@ -388,6 +495,8 @@ export interface Client {
   // join key for later syncs, and is meaningless outside the billing system — the
   // name behind it never leaves that system.
   externalRef?: string
+  // Intake from TIFEC, when connected. Absent until then; nothing assumes it.
+  intake?: IntakeSnapshot
   age: number
   diagnosis: string
   status: ClientStatus
@@ -442,7 +551,7 @@ export interface Workspace {
   practicum: PracticumState
 }
 
-export const PRACTICUM_DATA_VERSION = 6
+export const PRACTICUM_DATA_VERSION = 7
 
 export interface ExportPayload {
   version: number

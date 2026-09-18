@@ -7,6 +7,7 @@ import { PrimaryButton, SecondaryButton, TextArea, Field } from '../../component
 import { useWorkspaceStore } from '../../state/store'
 import { formatDate } from '../../utils/format'
 import { History, CheckSquare, Square, RefreshCw } from 'lucide-react'
+import { VersionProvenance } from '../../components/VersionProvenance'
 
 const CHECKLIST_LABELS: Record<keyof CasePresentation['checklist'], string> = {
   demographicsComplete: 'Demographics complete',
@@ -89,6 +90,7 @@ export function CasePresentationTab({ client }: { client: Client }) {
         </p>
 
         <SectionCard title="Demographics">
+          <IntakePending />
           <p className="text-xs text-[var(--color-ink)]/40 mb-1.5">
             Age, gender, ethnicity, living situation, and the circumstances of your involvement. For macro practice, briefly describe the
             agencies, organizations, or groups involved. Only what has actually been documented — leave out anything you are inferring.
@@ -126,6 +128,7 @@ export function CasePresentationTab({ client }: { client: Client }) {
         </SectionCard>
 
         <SectionCard title="Background">
+          <IntakePending />
           <InlineEdit value={client.casePresentation.background} onSave={(v) => patch({ background: v })} />
         </SectionCard>
 
@@ -221,10 +224,21 @@ function CasePresentationHistoryModal({ client, onClose }: { client: Client; onC
                 <span className="text-xs text-[var(--color-ink)]/45">{formatDate(v.date)}</span>
               </div>
               <div className="text-sm text-[var(--color-ink)]/70">{v.reasonForChange}</div>
+              <VersionProvenance client={client} sessionId={v.sessionId} changes={v.changes} />
             </div>
           ))}
         </div>
       )}
     </Modal>
+  )
+}
+
+// Shown on sections held for intake. Sessions never propose changes here; see
+// CASE_PRESENTATION_POLICY for why and for where that decision will be made.
+function IntakePending() {
+  return (
+    <p className="mb-2 inline-flex items-center gap-1.5 rounded-full bg-[var(--color-beige)] px-2.5 py-0.5 text-[11px] text-[var(--color-ink)]/55">
+      From intake. Sessions do not change this section until TIFEC is connected; edit by hand meanwhile.
+    </p>
   )
 }

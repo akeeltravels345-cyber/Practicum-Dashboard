@@ -26,12 +26,15 @@ import type {
   LongitudinalImpact,
   PendingSuggestion,
   SourceDiscrepancy,
+  ProposedChange,
+  EvidenceCitation,
   ProgressDomainEntry,
   ProgressDomainName,
   ProgressTrend,
   Session,
   TreatmentGoal,
 } from '../data/types'
+import { CASE_PRESENTATION_POLICY } from '../data/types'
 import { PROGRESS_DOMAINS } from '../data/types'
 import { computeKeyFindings, computePresentingConcerns, computeProgressDomains } from './engine'
 
@@ -68,6 +71,11 @@ Ground rules:
 - When a transcript IS present, treat it as a deeper evidence layer rather than something to summarize. Look for clinically meaningful material that did not reach the note: minimization of the client's own needs, self-blame language, what the client became activated by, in-session shifts in thinking, and which interventions the client responded to. List these in "transcriptOnlyEvidence".
 - When a transcript is present and appears to differ from the note, do NOT silently prefer one. Add an entry to "sourceDiscrepancies" describing the topic, what the note says, what the transcript suggests, and why it matters. The clinician decides the reading.
 - When no transcript is present, run exactly the same longitudinal analysis from the note alone and leave "transcriptOnlyEvidence" and "sourceDiscrepancies" as empty arrays. A missing transcript must never stop the case from being updated.
+- ADAPT, DO NOT REPEAT. Every document you return must describe the case as it is understood NOW, after this session and all prior ones. Rewrite "workingSynthesis" as the current understanding; never restate the previous summary with a sentence added. Keep existing wording only where the evidence still supports it unchanged.
+- 5-P FORMULATION. For presenting, predisposing, precipitating, perpetuating and protective, and for the maintaining cycle and alternative formulation, decide whether this session confirms, strengthens, weakens, adds to, contradicts, or leaves uncertain what is currently written. Put genuinely unresolved questions in "gaps".
+- TREATMENT PLAN. Retain goals that are still clinically appropriate; do not regenerate them. Change an objective or intervention only when the evidence shows what is or is not working, and say so. Name new treatment needs the current goals do not cover.
+- CASE PRESENTATION. Do not propose changes to demographics or background. Those come from intake, which is handled separately, and must not be inferred from session notes.
+- TRACEABILITY. For every document you change, list each individual change in its "changes" array: which field, what kind of change, the text before and after, why, and the evidence. Each evidence item must say its source: "transcript" for the client's own words, "note" for what the clinician documented, "intake" for intake material, "inference" for your own reasoning. Quote transcript and note evidence verbatim. Never label an inference as transcript or note.
 - Classify this session's effect on existing understanding in "longitudinalImpact", using these buckets: confirms, strengthens, weakens, expands, complicates, contradicts, introduces, resolves, leavesUncertain. A bucket may be empty. Populating them is how the record shows its reasoning over time.
 - Respond with ONLY a single valid JSON object matching the schema below. No markdown code fences, no prose before or after.
 
@@ -96,18 +104,20 @@ JSON schema (all fields required; use null/empty string/false/[] when there's no
     "maintainingCycle": { "trigger": string, "thought": string, "emotion": string, "behavior": string, "consequence": string, "reinforcement": string },
     "alternativeFormulation": { "alternative": string, "distinguishingEvidence": string },
     "gaps": string,
+    "changes": Array<{ "field": string, "label": string, "kind": "confirms"|"strengthens"|"weakens"|"adds"|"contradicts"|"revises"|"removes"|"uncertain", "before": string, "after": string, "why": string, "evidence": Array<{ "text": string, "source": "transcript"|"note"|"intake"|"inference" }> }>,
     "reasonForChange": string,
     "newEvidence": string
   },
   "treatmentPlan": null | {
     "presentingFocus": string, "rationale": string, "interventionStrategy": string, "currentPlan": string, "nextClinicalFocus": string,
     "goalUpdates": Array<{ "matchExistingGoal": string, "text": string, "status": ${JSON.stringify(GOAL_STATUS_VALUES)}[number], "objectives": string, "interventions": string, "evidence": string }>,
+    "changes": Array<{ "field": string, "label": string, "kind": "confirms"|"strengthens"|"weakens"|"adds"|"contradicts"|"revises"|"removes"|"uncertain", "before": string, "after": string, "why": string, "evidence": Array<{ "text": string, "source": "transcript"|"note"|"intake"|"inference" }> }>,
     "reasonForChange": string,
     "newEvidence": string
   },
   "casePresentation": null | {
-    "background": string, "currentClinicalPicture": string, "formulationSummary": string, "emotionalPresentation": string,
-    "interventionsAndPlans": string, "reasonForPresentation": string, "reasonForChange": string
+    "currentClinicalPicture": string, "formulationSummary": string, "emotionalPresentation": string,
+    "interventionsAndPlans": string, "reasonForPresentation": string, "changes": Array<{ "field": string, "label": string, "kind": "confirms"|"strengthens"|"weakens"|"adds"|"contradicts"|"revises"|"removes"|"uncertain", "before": string, "after": string, "why": string, "evidence": Array<{ "text": string, "source": "transcript"|"note"|"intake"|"inference" }> }>, "reasonForChange": string
   },
   "treatmentReview": null | {
     "whatIsChanging": string, "responseToIntervention": string, "progressToward": string,
@@ -125,7 +135,7 @@ For "domainUpdates": only include domains where this session provides new eviden
 function formatSession(s: Session): string {
   const lines = [
     `Session ${s.sessionNumber} (${s.date}, ${s.duration}h):`,
-    `SESSION NOTE (the clinician's documented summary): ${s.rawText || '(none)'}`,
+    `SESSION NOTE (the clinician's documented summary): ${s.rawText?.trim() ? s.rawText : '(not provided for this session; the transcript is the only source)'}`,
   ]
   // The transcript is a distinct source, not extra note text. Labelling it
   // explicitly is what lets the model reason about the two separately and
@@ -143,8 +153,16 @@ function formatSession(s: Session): string {
   return lines.join('\n')
 }
 
-export function buildAnalysisPrompt(client: Client, newSession: Session): { system: string; user: string } {
-  const priorSessions = client.sessions.filter((s) => s.id !== newSession.id)
+export function buildAnalysisPrompt(
+  client: Client,
+  newSession: Session,
+  opts: { reanalysis?: boolean } = {},
+): { system: string; user: string } {
+  // Only the sessions BEFORE this one are its history. After an edit, later
+  // sessions exist too; they are shown separately so the model does not treat
+  // the future as the past.
+  const priorSessions = client.sessions.filter((s) => s.sessionNumber < newSession.sessionNumber)
+  const laterSessions = client.sessions.filter((s) => s.sessionNumber > newSession.sessionNumber)
 
   const clientProfile = {
     label: client.label,
@@ -184,9 +202,15 @@ export function buildAnalysisPrompt(client: Client, newSession: Session): { syst
     domains: client.treatmentReview.domains,
   }
 
+  // Intake, when the TIFEC connection supplies it. Labelled as its own source so
+  // the model can cite it as "intake" rather than blending it into the notes.
+  const intakeBlock = client.intake?.sections.length
+    ? `\nINTAKE (from TIFEC, de-identified; cite as source "intake"):\n${client.intake.sections.map((x) => `${x.label}: ${x.text}`).join('\n')}\n`
+    : '\nINTAKE: not connected yet. Do not infer intake information from session notes.\n'
+
   const user = `De-identified client profile:
 ${JSON.stringify(clientProfile, null, 2)}
-
+${intakeBlock}
 Current formulation:
 ${JSON.stringify(currentFormulation, null, 2)}
 
@@ -202,7 +226,7 @@ ${JSON.stringify(currentTreatmentReview, null, 2)}
 Prior sessions (oldest first), ${priorSessions.length} total:
 ${priorSessions.length ? priorSessions.map(formatSession).join('\n\n') : '(none — this is the first session)'}
 
-NEW session to analyze against the above:
+${laterSessions.length ? `Later sessions, already reflected in the current documents above:\n${laterSessions.map(formatSession).join('\n\n')}\n\n` : ''}${opts.reanalysis ? 'This session was EDITED or had a transcript added after it was first analysed. The current documents above may already include conclusions drawn from its earlier version. Propose only the changes its REVISED evidence warrants, and say where the revision changes an earlier reading.\n\n' : ''}${opts.reanalysis ? 'REVISED' : 'NEW'} session to analyze against the above:
 ${formatSession(newSession)}
 
 Compare the new session against the client's history and current clinical documents above, and return the JSON object described in your instructions.`
@@ -350,6 +374,52 @@ function mergeDomainUpdates(client: Client, rawUpdates: unknown): ProgressDomain
   return PROGRESS_DOMAINS.map((d) => byDomain.get(d) ?? { domain: d, trend: 'insufficient_evidence', narrative: 'No session-note language clearly relevant to this domain yet.' })
 }
 
+const CHANGE_KINDS = ['confirms', 'strengthens', 'weakens', 'adds', 'contradicts', 'revises', 'removes', 'uncertain'] as const
+const EVIDENCE_SOURCES = ['transcript', 'note', 'intake', 'inference'] as const
+
+/**
+ * Parse the model's per-change list. Anything the model claims came from the
+ * transcript or the note is checked against that session's actual text; a
+ * "quote" that isn't there is downgraded to inference, so the Hub never shows
+ * an AI paraphrase as something the client said.
+ */
+export function parseChanges(raw: unknown, session: Session): ProposedChange[] {
+  if (!Array.isArray(raw)) return []
+  const note = (session.rawText || '').toLowerCase()
+  const transcript = (session.transcript || '').toLowerCase()
+  const found = (text: string, hay: string) => {
+    const probe = text.toLowerCase().replace(/^["'\s]+|["'\s.]+$/g, '').slice(0, 50)
+    return probe.length > 8 && hay.includes(probe)
+  }
+  return raw
+    .filter((c): c is Record<string, unknown> => typeof c === 'object' && c !== null)
+    .map((c) => {
+      const evidence: EvidenceCitation[] = (Array.isArray(c.evidence) ? c.evidence : [])
+        .filter((e): e is Record<string, unknown> => typeof e === 'object' && e !== null)
+        .map((e) => {
+          const text = str(e.text)
+          let source = oneOf(e.source, EVIDENCE_SOURCES, 'inference')
+          if (source === 'transcript' && !found(text, transcript)) source = 'inference'
+          if (source === 'note' && !found(text, note)) source = 'inference'
+          return { text, source, sessionId: source === 'intake' ? undefined : session.id, sessionNumber: source === 'intake' ? undefined : session.sessionNumber }
+        })
+        .filter((e) => e.text)
+      return {
+        id: uuid(),
+        field: str(c.field) || 'unspecified',
+        label: str(c.label) || str(c.field) || 'Change',
+        kind: oneOf(c.kind, CHANGE_KINDS, 'revises'),
+        before: str(c.before),
+        after: str(c.after),
+        why: str(c.why),
+        evidence,
+        sessionId: session.id,
+        sessionNumber: session.sessionNumber,
+      } satisfies ProposedChange
+    })
+    .filter((c) => c.why || c.after || c.before)
+}
+
 export function parseAiResponseIntoSuggestion(rawText: string, client: Client, session: Session): PendingSuggestion {
   const parsed = extractJson(rawText)
   if (!parsed || typeof parsed !== 'object') throw new AiRequestError('Model response was not a JSON object.')
@@ -386,6 +456,7 @@ export function parseAiResponseIntoSuggestion(rawText: string, client: Client, s
       status: 'pending',
       reasonForChange: str(fo.reasonForChange),
       newEvidence: str(fo.newEvidence),
+      changes: parseChanges(fo.changes, session),
       draft: {
         ...client.formulation,
         presenting: str(fo.presenting, client.formulation.presenting),
@@ -422,6 +493,7 @@ export function parseAiResponseIntoSuggestion(rawText: string, client: Client, s
       status: 'pending',
       reasonForChange: str(tpo.reasonForChange),
       newEvidence: str(tpo.newEvidence),
+      changes: parseChanges(tpo.changes, session),
       draft: {
         ...client.treatmentPlan,
         presentingFocus: str(tpo.presentingFocus, client.treatmentPlan.presentingFocus),
@@ -441,9 +513,11 @@ export function parseAiResponseIntoSuggestion(rawText: string, client: Client, s
       status: 'pending',
       reasonForChange: str(cpo.reasonForChange),
       newEvidence: suggestion.formulation?.newEvidence ?? '',
+      changes: parseChanges(cpo.changes, session).filter(
+        (c) => (CASE_PRESENTATION_POLICY as Record<string, string>)[c.field] !== 'intake',
+      ),
       draft: {
         ...client.casePresentation,
-        background: str(cpo.background, client.casePresentation.background),
         currentClinicalPicture: str(cpo.currentClinicalPicture, client.casePresentation.currentClinicalPicture),
         formulationSummary: str(cpo.formulationSummary, client.casePresentation.formulationSummary),
         emotionalPresentation: str(cpo.emotionalPresentation, client.casePresentation.emotionalPresentation),
@@ -576,9 +650,14 @@ export interface AiAnalysisResult {
   sourceAnalysis: ReturnType<typeof parseAiSourceAnalysis>
 }
 
-export async function runAiSessionAnalysis(client: Client, session: Session, settings: AiSettings): Promise<AiAnalysisResult> {
+export async function runAiSessionAnalysis(
+  client: Client,
+  session: Session,
+  settings: AiSettings,
+  opts: { reanalysis?: boolean } = {},
+): Promise<AiAnalysisResult> {
   try {
-    const { system, user } = buildAnalysisPrompt(client, session)
+    const { system, user } = buildAnalysisPrompt(client, session, opts)
     const rawText = await callClaude(settings, system, user)
     const suggestion = parseAiResponseIntoSuggestion(rawText, client, session)
     const { questions, gaps } = parseAiSupervisionAndGaps(rawText)

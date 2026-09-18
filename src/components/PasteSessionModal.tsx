@@ -10,28 +10,51 @@ import { splitSessionNote } from '../clinical/engine'
 
 const DURATION_OPTIONS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
 
-export function PasteSessionModal({ fixedClientId, onClose }: { fixedClientId?: string; onClose: () => void }) {
+/**
+ * Add a session, or edit an existing one.
+ *
+ * `editSessionId` puts the form in edit mode: it opens pre-filled, keeps the
+ * session's identity, and saving reruns the same analysis a new session gets.
+ * `focusTranscript` opens straight onto the transcript field, for "Add
+ * transcript" on a session that was first entered from notes alone.
+ */
+export function PasteSessionModal({
+  fixedClientId,
+  editSessionId,
+  focusTranscript,
+  onClose,
+}: {
+  fixedClientId?: string
+  editSessionId?: string
+  focusTranscript?: boolean
+  onClose: () => void
+}) {
   const clients = useWorkspaceStore((s) => s.clients)
   const addSession = useWorkspaceStore((s) => s.addSession)
+  const updateSession = useWorkspaceStore((s) => s.updateSession)
   const navigate = useNavigate()
+
+  const editing = fixedClientId && editSessionId
+    ? clients.find((c) => c.id === fixedClientId)?.sessions.find((s) => s.id === editSessionId)
+    : undefined
 
   const aiSettings = useWorkspaceStore((s) => s.aiSettings)
   const [clientId, setClientId] = useState(fixedClientId ?? clients[0]?.id ?? '')
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
-  const [duration, setDuration] = useState(1.0)
-  const [customDuration, setCustomDuration] = useState(false)
-  const [rawText, setRawText] = useState('')
-  const [transcript, setTranscript] = useState('')
-  const [showTranscript, setShowTranscript] = useState(false)
-  const [interventions, setInterventions] = useState('')
-  const [response, setResponse] = useState('')
-  const [plan, setPlan] = useState('')
+  const [date, setDate] = useState(() => editing?.date.slice(0, 10) ?? new Date().toISOString().slice(0, 10))
+  const [duration, setDuration] = useState(editing?.duration ?? 1.0)
+  const [customDuration, setCustomDuration] = useState(!!editing && !DURATION_OPTIONS.includes(editing.duration))
+  const [rawText, setRawText] = useState(editing?.rawText ?? '')
+  const [transcript, setTranscript] = useState(editing?.transcript ?? '')
+  const [showTranscript, setShowTranscript] = useState(!!focusTranscript || !!editing?.transcript)
+  const [interventions, setInterventions] = useState(editing?.interventions ?? '')
+  const [response, setResponse] = useState(editing?.response ?? '')
+  const [plan, setPlan] = useState(editing?.plan ?? '')
   const [confirmedDeidentified, setConfirmedDeidentified] = useState(false)
 
   // Tracks which of the three derived fields the clinician has hand-edited,
   // so re-running extraction as they keep pasting/typing never clobbers a
   // deliberate edit.
-  const [touched, setTouched] = useState({ interventions: false, response: false, plan: false })
+  const [touched, setTouched] = useState({ interventions: !!editing, response: !!editing, plan: !!editing })
   const [showBreakdown, setShowBreakdown] = useState(false)
 
   const client = clients.find((c) => c.id === clientId)
@@ -57,19 +80,32 @@ export function PasteSessionModal({ fixedClientId, onClose }: { fixedClientId?: 
     setShowBreakdown(true)
   }
 
+  // A session needs at least one evidence source: the note, the transcript, or both.
+  const hasEvidence = !!rawText.trim() || !!transcript.trim()
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!clientId || !rawText.trim()) return
+    if (!clientId || !hasEvidence) return
     if (needsConfirmation && !confirmedDeidentified) return
-    const { sessionId } = addSession(clientId, { date, duration, rawText, transcript, interventions, response, plan })
+    const input = { date, duration, rawText, transcript, interventions, response, plan }
+    if (editing) {
+      updateSession(clientId, editing.id, input)
+      onClose()
+      return
+    }
+    const { sessionId } = addSession(clientId, input)
     onClose()
     if (sessionId) navigate(`/clients/${clientId}?tab=timeline`)
   }
 
   return (
     <Modal
-      title="Paste Session"
-      subtitle="Preserve source → analyze → compare → update. The raw note below is retained permanently."
+      title={editing ? `Edit session ${editing.sessionNumber}` : 'Paste Session'}
+      subtitle={
+        editing
+          ? 'Saving reruns the full analysis on the revised evidence. Changes you already approved from this session stay in the record.'
+          : 'Add your SuperNotes, a transcript, or both. Both are kept as two sources for the same session.'
+      }
       onClose={onClose}
       wide
     >
@@ -131,15 +167,15 @@ export function PasteSessionModal({ fixedClientId, onClose }: { fixedClientId?: 
           <span className="text-xs text-[var(--color-ink)]/50">retained exactly as entered</span>
         </div>
         <Field
-          label="Raw session note"
-          hint="Paste your full note as one block — from Supanote or wherever you keep it. Interventions, client response, and plan/homework are pulled out automatically below; edit anything that needs a correction."
+          label="Session notes (SuperNotes)"
+          hint="Paste your full note as one block. Interventions, client response and plan are pulled out automatically below; edit anything that needs correcting. Optional if you add a transcript instead."
         >
           <TextArea
             value={rawText}
             onChange={(e) => handleRawTextChange(e.target.value)}
             placeholder="Paste or type the session note here…"
             className="min-h-[200px]"
-            required
+            required={!transcript.trim()}
           />
         </Field>
 
@@ -274,8 +310,8 @@ export function PasteSessionModal({ fixedClientId, onClose }: { fixedClientId?: 
           <SecondaryButton type="button" onClick={onClose}>
             Cancel
           </SecondaryButton>
-          <PrimaryButton type="submit" disabled={needsConfirmation && !confirmedDeidentified}>
-            Save session
+          <PrimaryButton type="submit" disabled={!hasEvidence || (needsConfirmation && !confirmedDeidentified)}>
+            {editing ? 'Save and re-analyse' : 'Save session'}
           </PrimaryButton>
         </div>
       </form>

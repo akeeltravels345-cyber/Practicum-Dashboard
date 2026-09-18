@@ -24,6 +24,7 @@ import { DEFAULT_AI_SETTINGS, DEFAULT_SYNC_SETTINGS, PRACTICUM_DATA_VERSION } fr
 import { buildSeedClients, buildSeedPracticum } from '../data/seed'
 import type { RosterFeed } from '../services/practicumSync'
 import { maybeSnapshot } from '../services/backup'
+import { renumberSessions } from '../clinical/provenance'
 import { demographicsLine } from '../services/practicumSync'
 import {
   buildRuleBasedSuggestion,
@@ -63,11 +64,18 @@ interface WorkspaceStore {
   updateClient: (id: string, patch: Partial<Client>) => void
 
   addSession: (clientId: string, input: SessionDraftInput) => { sessionId: string }
+  // Edit a session, including adding a transcript to a notes-only session. The
+  // session keeps its identity (one session, two evidence sources) and the full
+  // analysis runs again on the revised evidence.
+  updateSession: (clientId: string, sessionId: string, input: SessionDraftInput) => void
+  // Remove a session and everything derived only from it. Changes already
+  // approved from it stay in the record; approval was a clinical decision.
+  deleteSession: (clientId: string, sessionId: string) => void
 
   // Suggestion review workflow — the only path by which a drafted update to
   // formulation / treatment plan / case presentation / progress review
   // reaches the client's live record. Nothing is auto-applied.
-  generateSuggestion: (clientId: string, sessionId: string) => void
+  generateSuggestion: (clientId: string, sessionId: string, opts?: { reanalysis?: boolean }) => void
   retrySuggestion: (clientId: string, suggestionId: string) => void
   approveSuggestionField: (clientId: string, suggestionId: string, field: SuggestionFieldKey, editedDraft?: unknown) => void
   rejectSuggestionField: (clientId: string, suggestionId: string, field: SuggestionFieldKey) => void
@@ -129,6 +137,48 @@ function nextClientLabel(existing: string[]): string {
     const label = `Client ${n}`
     if (!taken.has(label)) return label
   }
+}
+
+/**
+ * Build a session's derived evidence from its two sources. Shared by add and
+ * edit so an edited session is analysed exactly like a new one. `prior` is the
+ * history this session is compared against: every session before it.
+ */
+function buildSessionEvidence(input: SessionDraftInput, themes: string[], prior: Session[]) {
+  const transcript = input.transcript?.trim() ?? ''
+  const extracted = extractFromSession({ ...input, transcript })
+  const longitudinalImpact = compareLongitudinal(extracted.symptoms, themes, prior, `${input.rawText}\n${transcript}`)
+  const transcriptOnlyEvidence = findTranscriptOnlyEvidence(input.rawText, transcript)
+  const sourceDiscrepancies = detectSourceDiscrepancies(input.rawText, transcript)
+  return {
+    extracted,
+    longitudinalImpact,
+    transcript: transcript || undefined,
+    transcriptOnlyEvidence: transcriptOnlyEvidence.length > 0 ? transcriptOnlyEvidence : undefined,
+    sourceDiscrepancies: sourceDiscrepancies.length > 0 ? sourceDiscrepancies : undefined,
+  }
+}
+
+/**
+ * Recompute every session's comparison against the sessions before it. After an
+ * edit or delete, later sessions were compared against a history that no longer
+ * exists, so their "confirms / strengthens / weakens" readings go stale.
+ */
+function recomputeImpacts(sessions: Session[], themes: string[]): Session[] {
+  const ordered = [...sessions].sort((a, b) => a.sessionNumber - b.sessionNumber)
+  return ordered.map((s, i) => ({
+    ...s,
+    longitudinalImpact: compareLongitudinal(
+      s.extracted.symptoms,
+      themes,
+      ordered.slice(0, i),
+      `${s.rawText}\n${s.transcript ?? ''}`,
+    ),
+  }))
+}
+
+function hourLabel(clientLabel: string, sessionNumber: number) {
+  return `${clientLabel} · Session ${sessionNumber}`
 }
 
 function touch(client: Client): Client {
@@ -227,19 +277,8 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       addSession: (clientId, input) => {
         const client = get().clients.find((c) => c.id === clientId)
         if (!client) return { sessionId: '' }
-        const extracted = extractFromSession(input)
-        // Compared against the whole case history, not just the theme list, so
-        // the nine impact buckets can tell "seen again" from "settling" from
-        // "flickering in and out".
-        const impact = compareLongitudinal(
-          extracted.symptoms,
-          client.themes,
-          client.sessions,
-          `${input.rawText}\n${input.transcript ?? ''}`,
-        )
-        const transcript = input.transcript?.trim() ?? ''
-        const transcriptOnlyEvidence = transcript ? findTranscriptOnlyEvidence(input.rawText, transcript) : []
-        const sourceDiscrepancies = transcript ? detectSourceDiscrepancies(input.rawText, transcript) : []
+        const evidence = buildSessionEvidence(input, client.themes, client.sessions)
+        const extracted = evidence.extracted
         const sessionId = uuid()
         const session: Session = {
           id: sessionId,
@@ -247,14 +286,10 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
           date: input.date,
           duration: input.duration,
           rawText: input.rawText,
-          transcript: transcript || undefined,
           interventions: input.interventions,
           response: input.response,
           plan: input.plan,
-          extracted,
-          transcriptOnlyEvidence: transcriptOnlyEvidence.length > 0 ? transcriptOnlyEvidence : undefined,
-          sourceDiscrepancies: sourceDiscrepancies.length > 0 ? sourceDiscrepancies : undefined,
-          longitudinalImpact: impact,
+          ...evidence,
           createdAt: new Date().toISOString(),
         }
 
@@ -288,7 +323,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
                 id: uuid(),
                 kind: 'direct',
                 amount: input.duration,
-                label: `${client.label} — Session ${session.sessionNumber}`,
+                label: hourLabel(client.label, session.sessionNumber),
                 date: input.date,
                 clientId,
                 sessionId,
@@ -311,7 +346,133 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         return { sessionId }
       },
 
-      generateSuggestion: (clientId, sessionId) => {
+      updateSession: (clientId, sessionId, input) => {
+        const client = get().clients.find((c) => c.id === clientId)
+        const existing = client?.sessions.find((s) => s.id === sessionId)
+        if (!client || !existing) return
+
+        // Editing is the one place real work can be overwritten, so snapshot
+        // first. Forced, because the rate limit exists for routine saves.
+        try {
+          maybeSnapshot(get().exportWorkspace(), true)
+        } catch {
+          /* best-effort */
+        }
+
+        const prior = client.sessions.filter((s) => s.sessionNumber < existing.sessionNumber)
+        const evidence = buildSessionEvidence(input, client.themes, prior)
+
+        // A discrepancy the clinician already ruled on stays ruled on when the
+        // same topic is found again; only genuinely new ones come back unreviewed.
+        const reviewedTopics = new Set((existing.sourceDiscrepancies ?? []).filter((d) => d.reviewed).map((d) => d.topic))
+        const sourceDiscrepancies = evidence.sourceDiscrepancies?.map((d) =>
+          reviewedTopics.has(d.topic) ? { ...d, reviewed: true } : d,
+        )
+
+        const revised: Session = {
+          ...existing,
+          date: input.date,
+          duration: input.duration,
+          rawText: input.rawText,
+          interventions: input.interventions,
+          response: input.response,
+          plan: input.plan,
+          ...evidence,
+          sourceDiscrepancies,
+        }
+
+        const sessions = renumberSessions(recomputeImpacts(client.sessions.map((s) => (s.id === sessionId ? revised : s)), client.themes))
+        const numberOf = new Map(sessions.map((s) => [s.id, s.sessionNumber]))
+        const updated = sessions.find((s) => s.id === sessionId)!
+        const sig = evaluateSessionSignificance({ ...client, sessions }, updated)
+        const newQs = draftSupervisionQuestions({ ...client, sessions }, updated, sig).filter(
+          (q) => !client.supervisionQuestions.some((existingQ) => existingQ.question === q.question),
+        )
+
+        // Suggestions for this session that nobody has acted on are now stale:
+        // they were drafted from evidence that has since changed. Any field
+        // already approved or rejected is a clinical decision and is kept.
+        const undecided = (sg: PendingSuggestion) =>
+          (['formulation', 'treatmentPlan', 'casePresentation', 'treatmentReview'] as const).every(
+            (k) => !sg[k] || sg[k]!.status === 'pending',
+          )
+        const pendingSuggestions = client.pendingSuggestions
+          .filter((sg) => !(sg.sessionId === sessionId && undecided(sg)))
+          .map((sg) => ({ ...sg, sessionNumber: numberOf.get(sg.sessionId) ?? sg.sessionNumber }))
+
+        let next: Client = touch({
+          ...client,
+          sessions,
+          themes: mergeThemes(client.themes, evidence.extracted.symptoms),
+          supervisionQuestions: [...client.supervisionQuestions, ...newQs],
+          pendingSuggestions,
+        })
+        next.documentationGaps = scanDocumentationGaps(next)
+
+        set((state) => ({
+          clients: state.clients.map((c) => (c.id === clientId ? next : c)),
+          practicum: {
+            ...state.practicum,
+            entries: state.practicum.entries.map((e) =>
+              e.clientId === clientId && e.sessionId && numberOf.has(e.sessionId)
+                ? {
+                    ...e,
+                    label: hourLabel(client.label, numberOf.get(e.sessionId)!),
+                    ...(e.sessionId === sessionId ? { amount: input.duration, date: input.date } : {}),
+                  }
+                : e,
+            ),
+          },
+        }))
+
+        get().generateSuggestion(clientId, sessionId, { reanalysis: true })
+      },
+
+      deleteSession: (clientId, sessionId) => {
+        const client = get().clients.find((c) => c.id === clientId)
+        if (!client || !client.sessions.some((s) => s.id === sessionId)) return
+
+        try {
+          maybeSnapshot(get().exportWorkspace(), true)
+        } catch {
+          /* best-effort */
+        }
+
+        const remaining = client.sessions.filter((s) => s.id !== sessionId)
+        const sessions = renumberSessions(recomputeImpacts(remaining, client.themes))
+        const numberOf = new Map(sessions.map((s) => [s.id, s.sessionNumber]))
+
+        const undecided = (sg: PendingSuggestion) =>
+          (['formulation', 'treatmentPlan', 'casePresentation', 'treatmentReview'] as const).every(
+            (k) => !sg[k] || sg[k]!.status === 'pending',
+          )
+
+        const next: Client = touch({
+          ...client,
+          sessions,
+          pendingSuggestions: client.pendingSuggestions
+            .filter((sg) => !(sg.sessionId === sessionId && undecided(sg)))
+            .map((sg) => ({ ...sg, sessionNumber: numberOf.get(sg.sessionId) ?? sg.sessionNumber })),
+        })
+        next.documentationGaps = scanDocumentationGaps(next)
+
+        set((state) => ({
+          clients: state.clients.map((c) => (c.id === clientId ? next : c)),
+          practicum: {
+            ...state.practicum,
+            // The session's own direct hours go with it; siblings are relabelled.
+            entries: state.practicum.entries
+              .filter((e) => e.sessionId !== sessionId)
+              .map((e) =>
+                e.clientId === clientId && e.sessionId && numberOf.has(e.sessionId)
+                  ? { ...e, label: hourLabel(client.label, numberOf.get(e.sessionId)!) }
+                  : e,
+              ),
+          },
+        }))
+      },
+
+      generateSuggestion: (clientId, sessionId, opts) => {
         const client = get().clients.find((c) => c.id === clientId)
         const session = client?.sessions.find((s) => s.id === sessionId)
         if (!client || !session) return
@@ -343,7 +504,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
           return
         }
 
-        runAiSessionAnalysis(client, session, settings).then((result) => {
+        runAiSessionAnalysis(client, session, settings, opts).then((result) => {
           const finalSuggestion = { ...result.suggestion, id: placeholderId }
           set((state) => ({
             clients: state.clients.map((c) => {
@@ -467,6 +628,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
                     reasonForChange: fieldDraft.reasonForChange,
                     currentUnderstanding: formulation.workingSynthesis,
                     sessionId: suggestion.sessionId,
+                    changes: fieldDraft.changes,
                   },
                 ],
               }
@@ -477,7 +639,15 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
                 treatmentPlan: draftValue as TreatmentPlan,
                 treatmentPlanHistory: [
                   ...c.treatmentPlanHistory,
-                  { version, date: new Date().toISOString(), previous: c.treatmentPlan, newEvidence: fieldDraft.newEvidence, reasonForChange: fieldDraft.reasonForChange },
+                  {
+                    version,
+                    date: new Date().toISOString(),
+                    previous: c.treatmentPlan,
+                    newEvidence: fieldDraft.newEvidence,
+                    reasonForChange: fieldDraft.reasonForChange,
+                    sessionId: suggestion.sessionId,
+                    changes: fieldDraft.changes,
+                  },
                 ],
               }
             } else if (field === 'casePresentation') {
@@ -487,7 +657,14 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
                 casePresentation: draftValue as CasePresentation,
                 casePresentationHistory: [
                   ...c.casePresentationHistory,
-                  { version, date: new Date().toISOString(), previous: c.casePresentation, reasonForChange: fieldDraft.reasonForChange },
+                  {
+                    version,
+                    date: new Date().toISOString(),
+                    previous: c.casePresentation,
+                    reasonForChange: fieldDraft.reasonForChange,
+                    sessionId: suggestion.sessionId,
+                    changes: fieldDraft.changes,
+                  },
                 ],
               }
             } else if (field === 'treatmentReview') {

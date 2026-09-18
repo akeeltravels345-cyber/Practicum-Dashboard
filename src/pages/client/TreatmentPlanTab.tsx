@@ -8,6 +8,7 @@ import { Field, TextArea, Select, PrimaryButton, SecondaryButton } from '../../c
 import { useWorkspaceStore } from '../../state/store'
 import { formatDate } from '../../utils/format'
 import { History, Sparkles, Plus, X, RefreshCw, AlertTriangle } from 'lucide-react'
+import { VersionProvenance } from '../../components/VersionProvenance'
 
 // The redesign showed a 10-point percentage stepper. Goals have no numeric
 // progress field, and adding one would create a second source of truth beside
@@ -293,6 +294,7 @@ function TreatmentPlanHistoryModal({ client, onClose }: { client: Client; onClos
                 <span className="font-medium">Previous focus: </span>
                 {v.previous.presentingFocus || '(none)'}
               </div>
+              <VersionProvenance client={client} sessionId={v.sessionId} changes={v.changes} />
             </div>
           ))}
         </div>
